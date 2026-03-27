@@ -1,0 +1,36 @@
+# Binaries
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated
+proto/gen/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Vendor (use go modules)
+vendor/
+
+# Temporary
+tmp/
+*.tmp
