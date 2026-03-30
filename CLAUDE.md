@@ -31,18 +31,18 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
     │ NATS JetStream│
     └──────┬───────┘
            │
-    ┌──────┼──────────────┐
-    ▼      ▼              ▼
-┌────────┐ ┌────────────┐ ┌──────────────┐
-│Settle- │ │ Indexer    │ │ Resolution   │
-│ment    │ │ :9004      │ │ Worker :9005 │
-│Worker  │ │(metrics    │ │ (metrics     │
-│:9003   │ │ :9094)     │ │  :9095)      │
-│(metrics│ │            │ │              │
-│ :9093) │ │ All on-    │ │ Chainlink,   │
-│        │ │ chain event│ │ API feeds,   │
-│On-chain│ │ monitoring │ │ manual       │
-│settle  │ └────────────┘ └──────────────┘
+    ┌──────┴──────┐
+    ▼             ▼
+┌────────┐ ┌────────────┐
+│Settle- │ │ Indexer    │
+│ment    │ │ :9004      │
+│Worker  │ │(metrics    │
+│:9003   │ │ :9094)     │
+│(metrics│ │            │
+│ :9093) │ │ All on-    │
+│        │ │ chain event│
+│On-chain│ │ monitoring │
+│settle  │ └────────────┘
 └────────┘
          │
          ▼
@@ -57,7 +57,8 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 | Platform | Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
 | Settlement Worker | On-chain trade settlement, relayer | — | 9003 | 9093 |
 | Indexer | On-chain event monitoring, deposits | — | 9004 | 9094 |
-| Resolution Worker | Market resolution (oracle, API, manual) | — | 9005 | 9095 |
+
+> **Resolution Worker deferred.** Manual resolution handled by admin wallet from frontend + backend verification. Automated resolution (Chainlink, API feeds) planned for future phase.
 
 ## Tech Stack
 
@@ -90,8 +91,7 @@ cmd/                        # Service entry points (main.go per service)
   ├── trading/
   ├── platform/
   ├── settlement/
-  ├── indexer/
-  └── resolution/
+  └── indexer/
 internal/
   ├── platform/             # Shared infrastructure packages
   │   ├── observability/    # Logger, metrics, tracing, context utilities
@@ -109,8 +109,7 @@ internal/
   ├── admin/                # Platform service — admin domain
   ├── affiliate/            # Platform service — referral system
   ├── settlement/           # Settlement worker domain
-  ├── indexer/              # Indexer domain
-  └── resolution/           # Resolution worker domain
+  └── indexer/              # Indexer domain
 proto/                      # Protobuf definitions
   ├── trading/v1/
   ├── platform/v1/
