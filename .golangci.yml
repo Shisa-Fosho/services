@@ -1,0 +1,71 @@
+run:
+  timeout: 5m
+  tests: true
+  build-tags:
+    - integration
+
+linters:
+  enable:
+    - errcheck # Check for unchecked errors
+    - gosimple # Simplify code
+    - govet # Reports suspicious constructs
+    - ineffassign # Detect ineffectual assignments
+    - staticcheck # Go static analysis
+    - unused # Check for unused code
+    - gofmt # Check formatting
+    - goimports # Check import ordering
+    - misspell # Check spelling
+    - gocritic # Opinionated linter
+    - revive # Golint replacement
+    - bodyclose # Check HTTP response body close
+    - nilerr # Check nil error returns
+    - errname # Check error naming
+    - errorlint # Error wrapping checks
+    - gosec # Security checks
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+
+  gofmt:
+    simplify: true
+
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: error-return
+      - name: error-naming
+      - name: if-return
+      - name: var-naming
+      - name: package-comments
+      - name: dot-imports
+      - name: blank-imports
+      - name: context-as-argument
+      - name: context-keys-type
+      - name: indent-error-flow
+
+  gosec:
+    excludes:
+      - G104 # Audit errors not checked (covered by errcheck)
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+  exclude-rules:
+    # Exclude some linters from running on test files
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
+
+    # Exclude generated protobuf code
+    - path: proto/gen/
+      linters:
+        - errcheck
+        - govet
+        - revive
+        - gosec
