@@ -19,15 +19,13 @@ help:
 # Start the development stack
 up:
 	@echo "Starting services..."
-	docker-compose -f deploy/docker-compose.yml up -d
-	@echo "Waiting for services to be healthy..."
-	@sleep 5
-	@echo "Services started."
+	docker compose -f deploy/docker-compose.yml up -d --wait
+	@echo "Services started and healthy."
 
 # Stop and clean up
 down:
 	@echo "Stopping services..."
-	docker-compose -f deploy/docker-compose.yml down -v
+	docker compose -f deploy/docker-compose.yml down -v
 
 # Run unit tests
 test:
