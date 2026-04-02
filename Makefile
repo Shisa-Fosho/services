@@ -76,7 +76,7 @@ tools:
 # Generate protobuf code
 proto:
 	@echo "Generating protobuf code..."
-	buf generate
+	cd proto && buf generate
 
 # Run database migrations
 migrate-up:

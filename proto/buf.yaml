@@ -1,0 +1,8 @@
+version: v1
+name: buf.build/shisa-fosho/services
+lint:
+  use:
+    - DEFAULT
+breaking:
+  use:
+    - FILE
