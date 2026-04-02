@@ -117,6 +117,122 @@ services:
     networks:
       - shisa
 
+  trading:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: trading
+    ports:
+      - "9001:9001"
+      - "8080:8080"
+      - "9091:9091"
+    environment:
+      DATABASE_URL: postgres://shisa:shisa@postgres:5432/shisa?sslmode=disable
+      NATS_URL: nats://nats:4222
+      GRPC_PORT: "9001"
+      HTTP_PORT: "8080"
+      METRICS_PORT: "9091"
+      OTEL_EXPORTER_OTLP_ENDPOINT: tempo:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:9001"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shisa
+
+  platform:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: platform
+    ports:
+      - "9002:9002"
+      - "8081:8081"
+      - "9092:9092"
+    environment:
+      DATABASE_URL: postgres://shisa:shisa@postgres:5432/shisa?sslmode=disable
+      NATS_URL: nats://nats:4222
+      GRPC_PORT: "9002"
+      HTTP_PORT: "8081"
+      METRICS_PORT: "9092"
+      OTEL_EXPORTER_OTLP_ENDPOINT: tempo:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/grpc_health_probe", "-addr=:9002"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shisa
+
+  settlement:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: settlement
+    ports:
+      - "9093:9093"
+    environment:
+      DATABASE_URL: postgres://shisa:shisa@postgres:5432/shisa?sslmode=disable
+      NATS_URL: nats://nats:4222
+      METRICS_PORT: "9093"
+      OTEL_EXPORTER_OTLP_ENDPOINT: tempo:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9093/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shisa
+
+  indexer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        SERVICE: indexer
+    ports:
+      - "9094:9094"
+    environment:
+      DATABASE_URL: postgres://shisa:shisa@postgres:5432/shisa?sslmode=disable
+      NATS_URL: nats://nats:4222
+      METRICS_PORT: "9094"
+      OTEL_EXPORTER_OTLP_ENDPOINT: tempo:4317
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9094/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - shisa
+
 volumes:
   pgdata:
   natsdata:

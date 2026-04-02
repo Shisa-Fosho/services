@@ -17,7 +17,19 @@
       "Bash(docker-compose ps)",
       "Bash(docker-compose logs *)",
       "Bash(buf generate)",
-      "Bash(buf lint)"
+      "Bash(buf lint)",
+      "Bash(ls:*)",
+      "Bash(buf:*)",
+      "Bash(make up:*)",
+      "Bash(curl -s localhost:9091/metrics)",
+      "Bash(curl -s localhost:9092/metrics)",
+      "Bash(curl -s localhost:9093/metrics)",
+      "Bash(curl -s localhost:9094/metrics)",
+      "Bash(curl:*)",
+      "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{t['labels']['job']}: {t['health']}\\\\\"\\) for t in data['data']['activeTargets']]\")",
+      "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{t['labels']['job']}: {t['health']}\\\\\"\\) for t in data['data']['activeTargets']]\")",
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go run:*)",
+      "Bash(docker exec deploy-postgres-1:*)"
     ]
   }
 }

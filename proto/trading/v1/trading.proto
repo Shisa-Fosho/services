@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package trading.v1;
+
+option go_package = "github.com/Shisa-Fosho/services/proto/gen/trading/v1;tradingv1";
+
+// TradingService handles order placement, matching, and book queries.
+service TradingService {
+  // GetStatus returns the health status of the trading service.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string status = 1;
+}

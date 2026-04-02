@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package platform.v1;
+
+option go_package = "github.com/Shisa-Fosho/services/proto/gen/platform/v1;platformv1";
+
+// PlatformService handles market data, user data, and admin operations.
+service PlatformService {
+  // GetStatus returns the health status of the platform service.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string status = 1;
+}
