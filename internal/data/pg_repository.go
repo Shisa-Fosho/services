@@ -6,8 +6,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
 
 // PGRepository implements Repository using PostgreSQL via pgx.
@@ -33,7 +34,7 @@ func (r *PGRepository) CreateUser(ctx context.Context, user *User) error {
 		user.TwoFASecretEncrypted, user.TwoFAEnabled,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating user %s: %w", user.Address, ErrDuplicateUser)
 		}
 		return fmt.Errorf("creating user: %w", err)
@@ -157,13 +158,4 @@ func scanPositions(rows pgx.Rows) ([]*Position, error) {
 		return nil, fmt.Errorf("iterating position rows: %w", err)
 	}
 	return positions, nil
-}
-
-// isPgUniqueViolation returns true if the error is a PostgreSQL unique constraint violation.
-func isPgUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505" // unique_violation
-	}
-	return false
 }

@@ -6,8 +6,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
 
 // PGRepository implements Repository using PostgreSQL via pgx.
@@ -28,7 +29,7 @@ func (r *PGRepository) CreateCategory(ctx context.Context, cat *Category) error 
 		cat.Name, cat.Slug,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating category %q: %w", cat.Slug, ErrDuplicateSlug)
 		}
 		return fmt.Errorf("creating category: %w", err)
@@ -88,7 +89,7 @@ func (r *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
 		event.EndDate, event.Featured, event.FeaturedSortOrder,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating event %q: %w", event.Slug, ErrDuplicateSlug)
 		}
 		return fmt.Errorf("creating event: %w", err)
@@ -185,7 +186,7 @@ func (r *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
 		market.Volume, market.OpenInterest,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating market %q: %w", market.Slug, ErrDuplicateSlug)
 		}
 		return fmt.Errorf("creating market: %w", err)
@@ -392,13 +393,4 @@ func statusSlice(statuses []Status) []int16 {
 		out[i] = int16(s)
 	}
 	return out
-}
-
-// isPgUniqueViolation returns true if the error is a PostgreSQL unique constraint violation.
-func isPgUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505" // unique_violation
-	}
-	return false
 }

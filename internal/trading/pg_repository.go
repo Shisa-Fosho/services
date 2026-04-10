@@ -6,8 +6,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
 
 // PGRepository implements Repository using PostgreSQL via pgx.
@@ -278,7 +279,7 @@ func (r *PGRepository) ReleaseBalance(ctx context.Context, userAddress string, a
 		amount, userAddress,
 	)
 	if err != nil {
-		if isPgCheckViolation(err) {
+		if postgres.IsCheckViolation(err) {
 			return fmt.Errorf("releasing balance for %s: %w", userAddress, ErrInsufficientFunds)
 		}
 		return fmt.Errorf("releasing balance: updating: %w", err)
@@ -304,7 +305,7 @@ func (r *PGRepository) DeductReserved(ctx context.Context, userAddress string, a
 		amount, userAddress,
 	)
 	if err != nil {
-		if isPgCheckViolation(err) {
+		if postgres.IsCheckViolation(err) {
 			return fmt.Errorf("deducting reserved for %s: %w", userAddress, ErrInsufficientFunds)
 		}
 		return fmt.Errorf("deducting reserved: updating: %w", err)
@@ -363,11 +364,3 @@ func statusSlice(statuses []OrderStatus) []int16 {
 	return out
 }
 
-// isPgCheckViolation returns true if the error is a PostgreSQL check constraint violation.
-func isPgCheckViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23514" // check_violation
-	}
-	return false
-}

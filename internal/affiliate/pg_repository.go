@@ -2,11 +2,11 @@ package affiliate
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
 
 // PGRepository implements Repository using PostgreSQL via pgx.
@@ -47,11 +47,11 @@ func (r *PGRepository) CreateReferral(ctx context.Context, ref *Referral) error 
 		ref.ReferrerAddress, ref.ReferredAddress,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating referral %s→%s: %w",
 				ref.ReferrerAddress, ref.ReferredAddress, ErrDuplicateReferral)
 		}
-		if isPgCheckViolation(err) {
+		if postgres.IsCheckViolation(err) {
 			return fmt.Errorf("creating referral %s→%s: %w",
 				ref.ReferrerAddress, ref.ReferredAddress, ErrSelfReferral)
 		}
@@ -74,7 +74,7 @@ func (r *PGRepository) RecordEarning(ctx context.Context, earning *Earning) erro
 		earning.FeeAmount, earning.ReferrerCut,
 	)
 	if err != nil {
-		if isPgUniqueViolation(err) {
+		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("recording earning for trade %s: %w",
 				earning.TradeID, ErrDuplicateEarning)
 		}
@@ -128,22 +128,4 @@ func (r *PGRepository) GetClaimableBalance(ctx context.Context, referrerAddress 
 		TotalEarned:     total,
 		Claimable:       total,
 	}, nil
-}
-
-// isPgUniqueViolation returns true if the error is a PostgreSQL unique constraint violation.
-func isPgUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505" // unique_violation
-	}
-	return false
-}
-
-// isPgCheckViolation returns true if the error is a PostgreSQL check constraint violation.
-func isPgCheckViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23514" // check_violation
-	}
-	return false
 }
