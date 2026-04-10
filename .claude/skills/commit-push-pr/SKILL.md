@@ -22,6 +22,15 @@ arguments:
    - **No AI attribution anywhere** — no "Generated with Claude", no "Co-Authored-By: Claude", nothing
 7. Return the PR URL
 
+## Schema Dump
+
+If any `migrations/**/*.sql` files are in the staged changes, regenerate `docs/schema.sql` before committing:
+
+1. Ensure the local stack is running (`make up` if needed)
+2. Run migrations: `DATABASE_URL="postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable" go run ./cmd/migrate up`
+3. Dump the schema: `docker exec deploy-postgres-1 pg_dump --schema-only --no-owner --no-privileges -U shisa shisa 2>/dev/null | grep -v '\\restrict' | grep -v '\\unrestrict' > docs/schema.sql`
+4. Stage `docs/schema.sql` alongside the migration files
+
 **Never commit:**
 - `.env` files or secrets
 - `proto/gen/` (generated code)
