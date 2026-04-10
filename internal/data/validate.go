@@ -3,13 +3,13 @@ package data
 import (
 	"fmt"
 
-	"github.com/ethereum/go-ethereum/common"
+	"github.com/Shisa-Fosho/services/internal/platform/eth"
 )
 
 // ValidateUser checks that a user meets all creation rules.
 // Returns ErrInvalidUser wrapping a descriptive message on failure.
 func ValidateUser(user *User) error {
-	if len(user.Address) != 42 || !common.IsHexAddress(user.Address) {
+	if !eth.IsValidAddress(user.Address) {
 		return fmt.Errorf("invalid ethereum address %q: %w", user.Address, ErrInvalidUser)
 	}
 
