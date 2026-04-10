@@ -29,7 +29,20 @@
       "Bash(python3 -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{t['labels']['job']}: {t['health']}\\\\\"\\) for t in data['data']['activeTargets']]\")",
       "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); [print\\(f\\\\\"{t['labels']['job']}: {t['health']}\\\\\"\\) for t in data['data']['activeTargets']]\")",
       "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go run:*)",
-      "Bash(docker exec deploy-postgres-1:*)"
+      "Bash(docker exec deploy-postgres-1:*)",
+      "Bash(make down:*)",
+      "Bash(xargs grep:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(gh api:*)",
+      "Bash(go get:*)",
+      "Bash(gofmt -w internal/market/ internal/data/ internal/affiliate/)",
+      "Bash(grep -v '^\\\\\\\\\\\\\\(un\\\\\\)\\\\?restrict')",
+      "Bash(grep -v '^--$')",
+      "Bash(grep -v '\\\\\\\\restrict')",
+      "Bash(grep -v '\\\\\\\\unrestrict')"
     ]
-  }
+  },
+  "outputStyle": "Learning"
 }
