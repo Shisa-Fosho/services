@@ -5,8 +5,9 @@ import "context"
 // Repository defines the persistence interface for the data domain.
 // Implementations must be safe for concurrent use.
 type Repository interface {
-	// CreateUser persists a new user. Returns ErrDuplicateUser if the address
-	// or username already exists.
+	// CreateUser persists a new user. Validates input via ValidateUser
+	// before persisting. Returns ErrInvalidUser for shape violations,
+	// ErrDuplicateUser if the address or username already exists.
 	CreateUser(ctx context.Context, user *User) error
 
 	// GetUserByAddress retrieves a user by Ethereum address.
@@ -19,6 +20,7 @@ type Repository interface {
 
 	// UpsertPosition creates or updates a position for a user in a market.
 	// The composite key is (user_address, market_id, side).
+	// Validates input via ValidatePosition before persisting.
 	UpsertPosition(ctx context.Context, pos *Position) error
 
 	// GetPositionsByUser returns all positions for a given user address.

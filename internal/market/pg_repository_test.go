@@ -6,31 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connecting to database: %v", err)
-	}
-
-	t.Cleanup(func() { pool.Close() })
-	return pool
-}
 
 func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
@@ -44,8 +26,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 }
 
 func TestPGRepository_CreateAndGetCategory(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -76,8 +57,7 @@ func TestPGRepository_CreateAndGetCategory(t *testing.T) {
 }
 
 func TestPGRepository_CreateCategory_DuplicateSlug(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -94,8 +74,7 @@ func TestPGRepository_CreateCategory_DuplicateSlug(t *testing.T) {
 }
 
 func TestPGRepository_GetCategory_NotFound(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -107,8 +86,7 @@ func TestPGRepository_GetCategory_NotFound(t *testing.T) {
 }
 
 func TestPGRepository_CreateAndGetEvent(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -147,8 +125,7 @@ func TestPGRepository_CreateAndGetEvent(t *testing.T) {
 }
 
 func TestPGRepository_GetEventBySlug(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -175,8 +152,7 @@ func TestPGRepository_GetEventBySlug(t *testing.T) {
 }
 
 func TestPGRepository_CreateEvent_DuplicateSlug(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -201,8 +177,7 @@ func TestPGRepository_CreateEvent_DuplicateSlug(t *testing.T) {
 }
 
 func TestPGRepository_GetEvent_NotFound(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -214,8 +189,7 @@ func TestPGRepository_GetEvent_NotFound(t *testing.T) {
 }
 
 func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -256,8 +230,7 @@ func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
 }
 
 func TestPGRepository_CreateAndGetMarket(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -296,8 +269,7 @@ func TestPGRepository_CreateAndGetMarket(t *testing.T) {
 }
 
 func TestPGRepository_GetMarketBySlug(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -328,8 +300,7 @@ func TestPGRepository_GetMarketBySlug(t *testing.T) {
 }
 
 func TestPGRepository_UpdateStatus(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -370,8 +341,7 @@ func TestPGRepository_UpdateStatus(t *testing.T) {
 }
 
 func TestPGRepository_UpdateStatus_InvalidTransition(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -407,8 +377,7 @@ func TestPGRepository_UpdateStatus_InvalidTransition(t *testing.T) {
 }
 
 func TestPGRepository_UpdateMarketPrices(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -455,8 +424,7 @@ func TestPGRepository_UpdateMarketPrices(t *testing.T) {
 }
 
 func TestPGRepository_UpdateMarketPrices_NotFound(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()

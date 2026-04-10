@@ -27,3 +27,26 @@ func ValidateUser(user *User) error {
 
 	return nil
 }
+
+// ValidatePosition checks that a position meets all persistence rules.
+// Callers must invoke ValidatePosition before UpsertPosition.
+// Returns ErrInvalidPosition wrapping a descriptive message on failure.
+func ValidatePosition(pos *Position) error {
+	if !eth.IsValidAddress(pos.UserAddress) {
+		return fmt.Errorf("invalid user address %q: %w", pos.UserAddress, ErrInvalidPosition)
+	}
+
+	if pos.MarketID == "" {
+		return fmt.Errorf("market id is required: %w", ErrInvalidPosition)
+	}
+
+	if !pos.Side.IsValid() {
+		return fmt.Errorf("invalid side %d: %w", pos.Side, ErrInvalidPosition)
+	}
+
+	if pos.Size < 0 {
+		return fmt.Errorf("size must be non-negative, got %d: %w", pos.Size, ErrInvalidPosition)
+	}
+
+	return nil
+}

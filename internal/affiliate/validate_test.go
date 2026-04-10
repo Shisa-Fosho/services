@@ -80,3 +80,81 @@ func TestValidateReferral(t *testing.T) {
 		})
 	}
 }
+
+func validEarning() *Earning {
+	return &Earning{
+		ReferrerAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TradeID:         "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+		FeeAmount:       100,
+		ReferrerCut:     25,
+	}
+}
+
+func TestValidateEarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		modify  func(e *Earning)
+		wantErr bool
+	}{
+		{
+			name:    "valid earning passes",
+			modify:  func(e *Earning) {},
+			wantErr: false,
+		},
+		{
+			name:    "empty referrer address",
+			modify:  func(e *Earning) { e.ReferrerAddress = "" },
+			wantErr: true,
+		},
+		{
+			name:    "malformed referrer address",
+			modify:  func(e *Earning) { e.ReferrerAddress = "not-an-address" },
+			wantErr: true,
+		},
+		{
+			name:    "empty trade id",
+			modify:  func(e *Earning) { e.TradeID = "" },
+			wantErr: true,
+		},
+		{
+			name:    "zero fee amount",
+			modify:  func(e *Earning) { e.FeeAmount = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "negative fee amount",
+			modify:  func(e *Earning) { e.FeeAmount = -1 },
+			wantErr: true,
+		},
+		{
+			name:    "zero referrer cut",
+			modify:  func(e *Earning) { e.ReferrerCut = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "negative referrer cut",
+			modify:  func(e *Earning) { e.ReferrerCut = -1 },
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := validEarning()
+			tt.modify(e)
+			err := ValidateEarning(e)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidEarning) {
+				t.Errorf("expected ErrInvalidEarning, got: %v", err)
+			}
+		})
+	}
+}

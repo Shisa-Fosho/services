@@ -5,13 +5,17 @@ import "context"
 // Repository defines the persistence interface for the affiliate domain.
 // Implementations must be safe for concurrent use.
 type Repository interface {
-	// CreateReferral persists a new referral relationship. Returns
-	// ErrDuplicateReferral if the relationship already exists,
-	// ErrCircularReferral if the reverse relationship exists.
+	// CreateReferral persists a new referral relationship. Validates input
+	// via ValidateReferral before persisting. Returns ErrInvalidReferral or
+	// ErrSelfReferral for shape violations, ErrDuplicateReferral if the
+	// relationship already exists, ErrCircularReferral if the reverse
+	// relationship exists.
 	CreateReferral(ctx context.Context, ref *Referral) error
 
-	// RecordEarning persists a new affiliate earning. Returns
-	// ErrDuplicateEarning if the trade ID already exists (idempotency).
+	// RecordEarning persists a new affiliate earning. Validates input via
+	// ValidateEarning before persisting. Returns ErrInvalidEarning for shape
+	// violations, ErrDuplicateEarning if the trade ID already exists
+	// (idempotency).
 	RecordEarning(ctx context.Context, earning *Earning) error
 
 	// GetEarningsByReferrer returns all earnings for a referrer,

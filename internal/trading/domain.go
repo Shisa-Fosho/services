@@ -100,24 +100,24 @@ func (t OrderType) IsValid() bool {
 // Fields mirror Polymarket's EIP-712 signed order struct for SDK compatibility.
 // All monetary amounts are in integer cents (1 = $0.01).
 type Order struct {
-	ID            string      // UUID, generated server-side.
-	Maker         string      // Ethereum address (0x-prefixed, checksummed).
-	TokenID       string      // Conditional token ID from CTFExchange.
-	MakerAmount   int64       // Amount maker is offering, in integer cents.
-	TakerAmount   int64       // Amount maker wants in return, in integer cents.
-	Salt          string      // Random value for EIP-712 signature uniqueness.
-	Expiration    int64       // Unix timestamp (seconds). 0 = no expiration.
-	Nonce         int64       // User nonce for order invalidation.
-	FeeRateBps    int64       // Fee in basis points (e.g., 100 = 1%).
-	Side          Side        // BUY or SELL.
-	SignatureType int8        // 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE.
-	Signature     string      // Hex-encoded EIP-712 signature.
-	Status        OrderStatus // Current lifecycle status.
-	OrderType     OrderType   // GTC or FOK.
-	MarketID      string      // UUID of the market this order belongs to.
-	SignatureHash string      // SHA-256 of Signature; idempotency key.
-	CreatedAt     time.Time   // Set by database.
-	UpdatedAt     time.Time   // Set by database.
+	ID            string      `db:"id"`             // UUID, generated server-side.
+	Maker         string      `db:"maker"`          // Ethereum address (0x-prefixed, checksummed).
+	TokenID       string      `db:"token_id"`       // Conditional token ID from CTFExchange.
+	MakerAmount   int64       `db:"maker_amount"`   // Amount maker is offering, in integer cents.
+	TakerAmount   int64       `db:"taker_amount"`   // Amount maker wants in return, in integer cents.
+	Salt          string      `db:"salt"`           // Random value for EIP-712 signature uniqueness.
+	Expiration    int64       `db:"expiration"`     // Unix timestamp (seconds). 0 = no expiration.
+	Nonce         int64       `db:"nonce"`          // User nonce for order invalidation.
+	FeeRateBps    int64       `db:"fee_rate_bps"`   // Fee in basis points (e.g., 100 = 1%).
+	Side          Side        `db:"side"`           // BUY or SELL.
+	SignatureType int8        `db:"signature_type"` // 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE.
+	Signature     string      `db:"signature"`      // Hex-encoded EIP-712 signature.
+	Status        OrderStatus `db:"status"`         // Current lifecycle status.
+	OrderType     OrderType   `db:"order_type"`     // GTC or FOK.
+	MarketID      string      `db:"market_id"`      // UUID of the market this order belongs to.
+	SignatureHash string      `db:"signature_hash"` // SHA-256 of Signature; idempotency key.
+	CreatedAt     time.Time   `db:"created_at"`     // Set by database.
+	UpdatedAt     time.Time   `db:"updated_at"`     // Set by database.
 }
 
 // OrderPrice computes the price in integer cents from maker/taker amounts.

@@ -23,3 +23,26 @@ func ValidateReferral(ref *Referral) error {
 
 	return nil
 }
+
+// ValidateEarning checks that an earning meets all persistence rules.
+// Callers must invoke ValidateEarning before RecordEarning.
+// Returns ErrInvalidEarning wrapping a descriptive message on failure.
+func ValidateEarning(earning *Earning) error {
+	if !eth.IsValidAddress(earning.ReferrerAddress) {
+		return fmt.Errorf("invalid referrer address %q: %w", earning.ReferrerAddress, ErrInvalidEarning)
+	}
+
+	if earning.TradeID == "" {
+		return fmt.Errorf("trade id is required: %w", ErrInvalidEarning)
+	}
+
+	if earning.FeeAmount <= 0 {
+		return fmt.Errorf("fee amount must be positive, got %d: %w", earning.FeeAmount, ErrInvalidEarning)
+	}
+
+	if earning.ReferrerCut <= 0 {
+		return fmt.Errorf("referrer cut must be positive, got %d: %w", earning.ReferrerCut, ErrInvalidEarning)
+	}
+
+	return nil
+}

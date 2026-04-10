@@ -103,3 +103,83 @@ func TestValidateUser(t *testing.T) {
 		})
 	}
 }
+
+func validPosition() *Position {
+	return &Position{
+		UserAddress:       "0x1234567890abcdef1234567890abcdef12345678",
+		MarketID:          "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+		Side:              SideBuy,
+		Size:              100,
+		AverageEntryPrice: 50,
+		RealisedPnL:       0,
+	}
+}
+
+func TestValidatePosition(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		modify  func(p *Position)
+		wantErr bool
+	}{
+		{
+			name:    "valid position passes",
+			modify:  func(p *Position) {},
+			wantErr: false,
+		},
+		{
+			name:    "zero size passes",
+			modify:  func(p *Position) { p.Size = 0 },
+			wantErr: false,
+		},
+		{
+			name:    "empty user address",
+			modify:  func(p *Position) { p.UserAddress = "" },
+			wantErr: true,
+		},
+		{
+			name:    "malformed user address",
+			modify:  func(p *Position) { p.UserAddress = "not-an-address" },
+			wantErr: true,
+		},
+		{
+			name:    "user address without 0x prefix",
+			modify:  func(p *Position) { p.UserAddress = "1234567890abcdef1234567890abcdef12345678" },
+			wantErr: true,
+		},
+		{
+			name:    "empty market id",
+			modify:  func(p *Position) { p.MarketID = "" },
+			wantErr: true,
+		},
+		{
+			name:    "invalid side",
+			modify:  func(p *Position) { p.Side = Side(99) },
+			wantErr: true,
+		},
+		{
+			name:    "negative size",
+			modify:  func(p *Position) { p.Size = -1 },
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := validPosition()
+			tt.modify(p)
+			err := ValidatePosition(p)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidPosition) {
+				t.Errorf("expected ErrInvalidPosition, got: %v", err)
+			}
+		})
+	}
+}

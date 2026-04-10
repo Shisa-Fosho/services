@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -39,46 +40,40 @@ func (r *PGRepository) CreateCategory(ctx context.Context, cat *Category) error 
 
 // GetCategory retrieves a category by ID. Returns ErrNotFound if not found.
 func (r *PGRepository) GetCategory(ctx context.Context, id string) (*Category, error) {
-	c := &Category{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, name, slug FROM categories WHERE id = $1`, id,
-	).Scan(&c.ID, &c.Name, &c.Slug)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM categories WHERE id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("getting category %s: %w", id, err)
+	}
+	category, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Category])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting category %s: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting category %s: %w", id, err)
 	}
-	return c, nil
+	return category, nil
 }
 
 // ListCategories returns all categories ordered by name.
 func (r *PGRepository) ListCategories(ctx context.Context) ([]*Category, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT id, name, slug FROM categories ORDER BY name`,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM categories ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing categories: %w", err)
 	}
-	defer rows.Close()
-
-	var cats []*Category
-	for rows.Next() {
-		c := &Category{}
-		if err := rows.Scan(&c.ID, &c.Name, &c.Slug); err != nil {
-			return nil, fmt.Errorf("scanning category row: %w", err)
-		}
-		cats = append(cats, c)
+	categories, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Category])
+	if err != nil {
+		return nil, fmt.Errorf("scanning categories: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating category rows: %w", err)
-	}
-	return cats, nil
+	return categories, nil
 }
 
-// CreateEvent persists a new event. Returns ErrDuplicateSlug if the slug
-// already exists.
+// CreateEvent persists a new event. Validates input via ValidateEvent before
+// persisting. Returns ErrInvalidEvent for shape violations, ErrDuplicateSlug
+// if the slug already exists.
 func (r *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
+	if err := ValidateEvent(event, time.Now()); err != nil {
+		return fmt.Errorf("creating event: %w", err)
+	}
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO events (
 			slug, title, description, category_id, event_type,
@@ -99,46 +94,34 @@ func (r *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
 
 // GetEvent retrieves an event by ID. Returns ErrNotFound if not found.
 func (r *PGRepository) GetEvent(ctx context.Context, id string) (*Event, error) {
-	e := &Event{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, slug, title, description, category_id, event_type,
-			resolution_config, status, end_date, featured, featured_sort_order,
-			created_at, updated_at
-		FROM events WHERE id = $1`, id,
-	).Scan(
-		&e.ID, &e.Slug, &e.Title, &e.Description, &e.CategoryID,
-		&e.EventType, &e.ResolutionConfig, &e.Status, &e.EndDate,
-		&e.Featured, &e.FeaturedSortOrder, &e.CreatedAt, &e.UpdatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM events WHERE id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("getting event %s: %w", id, err)
+	}
+	event, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Event])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting event %s: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting event %s: %w", id, err)
 	}
-	return e, nil
+	return event, nil
 }
 
 // GetEventBySlug retrieves an event by slug. Returns ErrNotFound if not found.
 func (r *PGRepository) GetEventBySlug(ctx context.Context, slug string) (*Event, error) {
-	e := &Event{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, slug, title, description, category_id, event_type,
-			resolution_config, status, end_date, featured, featured_sort_order,
-			created_at, updated_at
-		FROM events WHERE slug = $1`, slug,
-	).Scan(
-		&e.ID, &e.Slug, &e.Title, &e.Description, &e.CategoryID,
-		&e.EventType, &e.ResolutionConfig, &e.Status, &e.EndDate,
-		&e.Featured, &e.FeaturedSortOrder, &e.CreatedAt, &e.UpdatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM events WHERE slug = $1`, slug)
+	if err != nil {
+		return nil, fmt.Errorf("getting event by slug %q: %w", slug, err)
+	}
+	event, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Event])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting event by slug %q: %w", slug, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting event by slug %q: %w", slug, err)
 	}
-	return e, nil
+	return event, nil
 }
 
 // ListEvents returns events optionally filtered by statuses.
@@ -148,31 +131,31 @@ func (r *PGRepository) ListEvents(ctx context.Context, statuses []Status) ([]*Ev
 
 	if len(statuses) == 0 {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, slug, title, description, category_id, event_type,
-				resolution_config, status, end_date, featured, featured_sort_order,
-				created_at, updated_at
-			FROM events ORDER BY created_at DESC`,
+			`SELECT * FROM events ORDER BY created_at DESC`,
 		)
 	} else {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, slug, title, description, category_id, event_type,
-				resolution_config, status, end_date, featured, featured_sort_order,
-				created_at, updated_at
-			FROM events WHERE status = ANY($1)
-			ORDER BY created_at DESC`, statusSlice(statuses),
+			`SELECT * FROM events WHERE status = ANY($1) ORDER BY created_at DESC`,
+			statusSlice(statuses),
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing events: %w", err)
 	}
-	defer rows.Close()
-
-	return scanEvents(rows)
+	events, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Event])
+	if err != nil {
+		return nil, fmt.Errorf("scanning events: %w", err)
+	}
+	return events, nil
 }
 
-// CreateMarket persists a new market. Returns ErrDuplicateSlug if the slug
-// already exists.
+// CreateMarket persists a new market. Validates input via ValidateMarket
+// before persisting. Returns ErrInvalidMarket for shape violations,
+// ErrDuplicateSlug if the slug already exists.
 func (r *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
+	if err := ValidateMarket(market); err != nil {
+		return fmt.Errorf("creating market: %w", err)
+	}
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO markets (
 			slug, event_id, question, outcome_yes_label, outcome_no_label,
@@ -196,50 +179,34 @@ func (r *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
 
 // GetMarket retrieves a market by ID. Returns ErrNotFound if not found.
 func (r *PGRepository) GetMarket(ctx context.Context, id string) (*Market, error) {
-	m := &Market{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, slug, event_id, question, outcome_yes_label, outcome_no_label,
-			token_id_yes, token_id_no, condition_id, status, outcome,
-			price_yes, price_no, volume, open_interest, created_at, updated_at
-		FROM markets WHERE id = $1`, id,
-	).Scan(
-		&m.ID, &m.Slug, &m.EventID, &m.Question,
-		&m.OutcomeYesLabel, &m.OutcomeNoLabel,
-		&m.TokenIDYes, &m.TokenIDNo, &m.ConditionID,
-		&m.Status, &m.Outcome, &m.PriceYes, &m.PriceNo,
-		&m.Volume, &m.OpenInterest, &m.CreatedAt, &m.UpdatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM markets WHERE id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("getting market %s: %w", id, err)
+	}
+	market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting market %s: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting market %s: %w", id, err)
 	}
-	return m, nil
+	return market, nil
 }
 
 // GetMarketBySlug retrieves a market by slug. Returns ErrNotFound if not found.
 func (r *PGRepository) GetMarketBySlug(ctx context.Context, slug string) (*Market, error) {
-	m := &Market{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, slug, event_id, question, outcome_yes_label, outcome_no_label,
-			token_id_yes, token_id_no, condition_id, status, outcome,
-			price_yes, price_no, volume, open_interest, created_at, updated_at
-		FROM markets WHERE slug = $1`, slug,
-	).Scan(
-		&m.ID, &m.Slug, &m.EventID, &m.Question,
-		&m.OutcomeYesLabel, &m.OutcomeNoLabel,
-		&m.TokenIDYes, &m.TokenIDNo, &m.ConditionID,
-		&m.Status, &m.Outcome, &m.PriceYes, &m.PriceNo,
-		&m.Volume, &m.OpenInterest, &m.CreatedAt, &m.UpdatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM markets WHERE slug = $1`, slug)
+	if err != nil {
+		return nil, fmt.Errorf("getting market by slug %q: %w", slug, err)
+	}
+	market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting market by slug %q: %w", slug, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting market by slug %q: %w", slug, err)
 	}
-	return m, nil
+	return market, nil
 }
 
 // ListMarkets returns markets optionally filtered by statuses.
@@ -249,43 +216,38 @@ func (r *PGRepository) ListMarkets(ctx context.Context, statuses []Status) ([]*M
 
 	if len(statuses) == 0 {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, slug, event_id, question, outcome_yes_label, outcome_no_label,
-				token_id_yes, token_id_no, condition_id, status, outcome,
-				price_yes, price_no, volume, open_interest, created_at, updated_at
-			FROM markets ORDER BY created_at DESC`,
+			`SELECT * FROM markets ORDER BY created_at DESC`,
 		)
 	} else {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, slug, event_id, question, outcome_yes_label, outcome_no_label,
-				token_id_yes, token_id_no, condition_id, status, outcome,
-				price_yes, price_no, volume, open_interest, created_at, updated_at
-			FROM markets WHERE status = ANY($1)
-			ORDER BY created_at DESC`, statusSlice(statuses),
+			`SELECT * FROM markets WHERE status = ANY($1) ORDER BY created_at DESC`,
+			statusSlice(statuses),
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing markets: %w", err)
 	}
-	defer rows.Close()
-
-	return scanMarkets(rows)
+	markets, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Market])
+	if err != nil {
+		return nil, fmt.Errorf("scanning markets: %w", err)
+	}
+	return markets, nil
 }
 
 // ListMarketsByEvent returns all markets belonging to an event.
 func (r *PGRepository) ListMarketsByEvent(ctx context.Context, eventID string) ([]*Market, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, slug, event_id, question, outcome_yes_label, outcome_no_label,
-			token_id_yes, token_id_no, condition_id, status, outcome,
-			price_yes, price_no, volume, open_interest, created_at, updated_at
-		FROM markets WHERE event_id = $1
-		ORDER BY created_at DESC`, eventID,
+		`SELECT * FROM markets WHERE event_id = $1 ORDER BY created_at DESC`,
+		eventID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing markets for event %s: %w", eventID, err)
 	}
-	defer rows.Close()
-
-	return scanMarkets(rows)
+	markets, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Market])
+	if err != nil {
+		return nil, fmt.Errorf("scanning markets: %w", err)
+	}
+	return markets, nil
 }
 
 // UpdateStatus changes the status of a market. Validates the transition
@@ -340,50 +302,6 @@ func (r *PGRepository) UpdateMarketPrices(ctx context.Context, id string, priceY
 		return fmt.Errorf("updating market %s prices: %w", id, ErrNotFound)
 	}
 	return nil
-}
-
-// scanEvents collects rows into a slice of events.
-func scanEvents(rows pgx.Rows) ([]*Event, error) {
-	var events []*Event
-	for rows.Next() {
-		e := &Event{}
-		err := rows.Scan(
-			&e.ID, &e.Slug, &e.Title, &e.Description, &e.CategoryID,
-			&e.EventType, &e.ResolutionConfig, &e.Status, &e.EndDate,
-			&e.Featured, &e.FeaturedSortOrder, &e.CreatedAt, &e.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scanning event row: %w", err)
-		}
-		events = append(events, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating event rows: %w", err)
-	}
-	return events, nil
-}
-
-// scanMarkets collects rows into a slice of markets.
-func scanMarkets(rows pgx.Rows) ([]*Market, error) {
-	var markets []*Market
-	for rows.Next() {
-		m := &Market{}
-		err := rows.Scan(
-			&m.ID, &m.Slug, &m.EventID, &m.Question,
-			&m.OutcomeYesLabel, &m.OutcomeNoLabel,
-			&m.TokenIDYes, &m.TokenIDNo, &m.ConditionID,
-			&m.Status, &m.Outcome, &m.PriceYes, &m.PriceNo,
-			&m.Volume, &m.OpenInterest, &m.CreatedAt, &m.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scanning market row: %w", err)
-		}
-		markets = append(markets, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating market rows: %w", err)
-	}
-	return markets, nil
 }
 
 // statusSlice converts Status values to int16 for pgx ANY() binding.

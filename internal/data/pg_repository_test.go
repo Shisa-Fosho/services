@@ -5,31 +5,13 @@ package data
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/eth"
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connecting to database: %v", err)
-	}
-
-	t.Cleanup(func() { pool.Close() })
-	return pool
-}
 
 func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
@@ -62,8 +44,7 @@ func insertTestMarket(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 func TestPGRepository_CreateAndGetUser(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -93,8 +74,7 @@ func TestPGRepository_CreateAndGetUser(t *testing.T) {
 }
 
 func TestPGRepository_CreateUser_Duplicate(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -115,8 +95,7 @@ func TestPGRepository_CreateUser_Duplicate(t *testing.T) {
 }
 
 func TestPGRepository_GetUserByEmail(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -142,8 +121,7 @@ func TestPGRepository_GetUserByEmail(t *testing.T) {
 }
 
 func TestPGRepository_GetUser_NotFound(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -155,8 +133,7 @@ func TestPGRepository_GetUser_NotFound(t *testing.T) {
 }
 
 func TestPGRepository_UpsertPosition(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -213,8 +190,7 @@ func TestPGRepository_UpsertPosition(t *testing.T) {
 }
 
 func TestPGRepository_GetPositionsByUser(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -222,7 +198,7 @@ func TestPGRepository_GetPositionsByUser(t *testing.T) {
 	marketID := insertTestMarket(t, pool)
 
 	user := &User{
-		Address:      "0xdddddddddddddddddddddddddddddddddddddd",
+		Address:      eth.TestAddress(),
 		Username:     "multipos",
 		SignupMethod: SignupMethodWallet,
 	}
@@ -253,8 +229,7 @@ func TestPGRepository_GetPositionsByUser(t *testing.T) {
 }
 
 func TestPGRepository_GetPosition_NotFound(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()

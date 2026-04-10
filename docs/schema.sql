@@ -441,6 +441,13 @@ CREATE INDEX idx_events_category ON public.events USING btree (category_id);
 
 
 --
+-- Name: idx_events_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_events_created_at ON public.events USING btree (created_at DESC);
+
+
+--
 -- Name: idx_events_featured; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -452,6 +459,13 @@ CREATE INDEX idx_events_featured ON public.events USING btree (featured, feature
 --
 
 CREATE INDEX idx_events_status ON public.events USING btree (status);
+
+
+--
+-- Name: idx_markets_created_at; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_markets_created_at ON public.markets USING btree (created_at DESC);
 
 
 --

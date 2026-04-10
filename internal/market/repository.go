@@ -15,8 +15,9 @@ type Repository interface {
 	// ListCategories returns all categories ordered by name.
 	ListCategories(ctx context.Context) ([]*Category, error)
 
-	// CreateEvent persists a new event. Returns ErrDuplicateSlug if the slug
-	// already exists.
+	// CreateEvent persists a new event. Validates input via ValidateEvent
+	// before persisting. Returns ErrInvalidEvent for shape violations,
+	// ErrDuplicateSlug if the slug already exists.
 	CreateEvent(ctx context.Context, event *Event) error
 
 	// GetEvent retrieves an event by ID. Returns ErrNotFound if not found.
@@ -29,8 +30,9 @@ type Repository interface {
 	// is empty, all events are returned.
 	ListEvents(ctx context.Context, statuses []Status) ([]*Event, error)
 
-	// CreateMarket persists a new market. Returns ErrDuplicateSlug if the
-	// slug already exists.
+	// CreateMarket persists a new market. Validates input via ValidateMarket
+	// before persisting. Returns ErrInvalidMarket for shape violations,
+	// ErrDuplicateSlug if the slug already exists.
 	CreateMarket(ctx context.Context, market *Market) error
 
 	// GetMarket retrieves a market by ID. Returns ErrNotFound if not found.
