@@ -37,7 +37,11 @@
       "Bash(go vet:*)",
       "Bash(gh api:*)",
       "Bash(go get:*)",
-      "Bash(gofmt -w internal/market/ internal/data/ internal/affiliate/)"
+      "Bash(gofmt -w internal/market/ internal/data/ internal/affiliate/)",
+      "Bash(grep -v '^\\\\\\\\\\\\\\(un\\\\\\)\\\\?restrict')",
+      "Bash(grep -v '^--$')",
+      "Bash(grep -v '\\\\\\\\restrict')",
+      "Bash(grep -v '\\\\\\\\unrestrict')"
     ]
   },
   "outputStyle": "Learning"
