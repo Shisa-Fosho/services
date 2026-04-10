@@ -207,11 +207,11 @@ func TestToCanonical(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		order          *Order
-		wantSide       Side
-		wantPrice      int64
-		wantConverted  bool
+		name          string
+		order         *Order
+		wantSide      Side
+		wantPrice     int64
+		wantConverted bool
 	}{
 		{
 			name: "BUY YES @ 40 unchanged",

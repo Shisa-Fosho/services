@@ -84,10 +84,23 @@ Standard fields: `request_id`, `user_address`, `order_id`, `market_id`, `tx_id`,
 
 ### Testing
 - Table-driven with subtests: `t.Run(name, func(t *testing.T) { ... })`
-- `t.Parallel()` for independent tests
+- `t.Parallel()` for independent unit tests; **avoid `t.Parallel()` in integration tests** that share a database — parallel truncation causes test pollution
 - Integration tests: `//go:build integration` (requires running stack)
+- Integration test runs across packages must use `-p 1` because packages share one physical database
+- Shared test helper: `postgres.TestPool(t)` from `internal/platform/postgres/testutil.go`
 - TDD: write tests first, `go build` to verify compilation, `go test` once implementation exists
 - Test naming: `TestFunctionName_Scenario` (e.g., `TestMatchOrders_InsufficientBalance`)
+
+### Validation
+Domain validators (`ValidateUser`, `ValidateMarket`, `ValidatePosition`, etc.) are package-level functions in `internal/<domain>/validate.go` that return an error wrapping a domain sentinel (e.g., `ErrInvalidPosition`).
+
+**Where to call them:**
+- **Shape validators** — those that only inspect struct fields (`ValidateUser`, `ValidateMarket`, `ValidateEvent`, `ValidateReferral`, `ValidatePosition`, `ValidateEarning`) are called **inside the repository write method** (`CreateX`, `UpsertX`, `RecordX`). This gives "data reaching the DB is valid" as a property of the repository, so no caller can forget to validate.
+- **Business-rule validators** — those that need external context the repository doesn't have (`ValidateOrder` takes `MarketConfig` and `time.Time`) are called **by the caller** before invoking the repository. Repository doc comments state the contract.
+
+Validators remain exported so that future boundary layers (REST handlers, gRPC services, NATS consumers) can also invoke them for early input rejection and clean API error messages. Calling the same validator at both the boundary and inside the repository is fine — validation is cheap and double-checking is never wrong.
+
+**Rule of thumb**: if a validator only looks at the struct fields, the repo calls it. If it needs external context, the caller calls it.
 
 ### Database (PostgreSQL)
 ```go

@@ -6,32 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connecting to database: %v", err)
-	}
-
-	t.Cleanup(func() { pool.Close() })
-	return pool
-}
 
 // cleanTables truncates trading tables between tests.
 func cleanTables(t *testing.T, pool *pgxpool.Pool) {
@@ -45,7 +26,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 }
 
 func TestPGRepository_SaveAndGetOrder(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -98,7 +79,7 @@ func TestPGRepository_SaveAndGetOrder(t *testing.T) {
 }
 
 func TestPGRepository_SaveOrder_Duplicate(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -127,7 +108,7 @@ func TestPGRepository_SaveOrder_Duplicate(t *testing.T) {
 }
 
 func TestPGRepository_GetOrder_NotFound(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -139,7 +120,7 @@ func TestPGRepository_GetOrder_NotFound(t *testing.T) {
 }
 
 func TestPGRepository_ListOrdersByUser_StatusFilter(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -180,7 +161,7 @@ func TestPGRepository_ListOrdersByUser_StatusFilter(t *testing.T) {
 }
 
 func TestPGRepository_ListOrdersByMarket(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -216,7 +197,7 @@ func TestPGRepository_ListOrdersByMarket(t *testing.T) {
 }
 
 func TestPGRepository_UpdateOrderStatus(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -251,7 +232,7 @@ func TestPGRepository_UpdateOrderStatus(t *testing.T) {
 }
 
 func TestPGRepository_UpdateOrderStatus_NotFound(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -263,7 +244,7 @@ func TestPGRepository_UpdateOrderStatus_NotFound(t *testing.T) {
 }
 
 func TestPGRepository_SaveTrade(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -318,7 +299,7 @@ func TestPGRepository_SaveTrade(t *testing.T) {
 }
 
 func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -388,7 +369,7 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 }
 
 func TestPGRepository_ReserveBalance_InsufficientFunds(t *testing.T) {
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()

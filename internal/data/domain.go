@@ -9,9 +9,10 @@ import (
 
 // Sentinel errors for the data domain.
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrDuplicateUser = errors.New("duplicate user")
-	ErrInvalidUser   = errors.New("invalid user")
+	ErrNotFound        = errors.New("not found")
+	ErrDuplicateUser   = errors.New("duplicate user")
+	ErrInvalidUser     = errors.New("invalid user")
+	ErrInvalidPosition = errors.New("invalid position")
 )
 
 // SignupMethod represents how a user registered.
@@ -67,25 +68,25 @@ func (s Side) IsValid() bool {
 
 // User represents a registered user of the platform.
 type User struct {
-	Address              string  // Ethereum address (0x-prefixed), PK.
-	Username             string  // Unique display name.
-	Email                *string // Nullable; required for email signup.
-	SignupMethod         SignupMethod
-	SafeAddress          string // Gnosis Safe address for wallet users.
-	ProxyAddress         string // Poly Proxy address for email users.
-	TwoFASecretEncrypted string // Encrypted 2FA secret (never logged).
-	TwoFAEnabled         bool
-	CreatedAt            time.Time
+	Address              string       `db:"address"`  // Ethereum address (0x-prefixed), PK.
+	Username             string       `db:"username"` // Unique display name.
+	Email                *string      `db:"email"`    // Nullable; required for email signup.
+	SignupMethod         SignupMethod `db:"signup_method"`
+	SafeAddress          string       `db:"safe_address"`           // Gnosis Safe address for wallet users.
+	ProxyAddress         string       `db:"proxy_address"`          // Poly Proxy address for email users.
+	TwoFASecretEncrypted string       `db:"twofa_secret_encrypted"` // Encrypted 2FA secret (never logged).
+	TwoFAEnabled         bool         `db:"twofa_enabled"`
+	CreatedAt            time.Time    `db:"created_at"`
 }
 
 // Position represents a user's holding in a specific market and side.
 // One row per user per market per side. Updated on each fill.
 // All monetary amounts are in integer cents (1 = $0.01).
 type Position struct {
-	UserAddress       string // FK to users.address.
-	MarketID          string // FK to markets.id.
-	Side              Side
-	Size              int64 // Number of contracts held.
-	AverageEntryPrice int64 // Average price paid per contract, in cents.
-	RealisedPnL       int64 // Cumulative realised profit/loss, in cents.
+	UserAddress       string `db:"user_address"` // FK to users.address.
+	MarketID          string `db:"market_id"`    // FK to markets.id.
+	Side              Side   `db:"side"`
+	Size              int64  `db:"size"`                // Number of contracts held.
+	AverageEntryPrice int64  `db:"average_entry_price"` // Average price paid per contract, in cents.
+	RealisedPnL       int64  `db:"realised_pnl"`        // Cumulative realised profit/loss, in cents.
 }

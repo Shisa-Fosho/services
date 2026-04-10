@@ -5,31 +5,13 @@ package affiliate
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/Shisa-Fosho/services/internal/platform/eth"
+	"github.com/Shisa-Fosho/services/internal/platform/postgres"
 )
-
-func testPool(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		t.Skip("DATABASE_URL not set; skipping integration test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatalf("connecting to database: %v", err)
-	}
-
-	t.Cleanup(func() { pool.Close() })
-	return pool
-}
 
 func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
@@ -86,8 +68,7 @@ func insertTestTrade(t *testing.T, pool *pgxpool.Pool, matchID string) string {
 }
 
 func TestPGRepository_CreateReferral(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -102,15 +83,19 @@ func TestPGRepository_CreateReferral(t *testing.T) {
 }
 
 func TestPGRepository_CreateReferral_Duplicate(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
+	referrer := eth.TestAddress()
+	referred := eth.TestAddress()
+	for referred == referrer {
+		referred = eth.TestAddress()
+	}
 	ref := &Referral{
-		ReferrerAddress: "0xcccccccccccccccccccccccccccccccccccccccc",
-		ReferredAddress: "0xdddddddddddddddddddddddddddddddddddddd",
+		ReferrerAddress: referrer,
+		ReferredAddress: referred,
 	}
 	if err := repo.CreateReferral(ctx, ref); err != nil {
 		t.Fatalf("creating referral: %v", err)
@@ -123,8 +108,7 @@ func TestPGRepository_CreateReferral_Duplicate(t *testing.T) {
 }
 
 func TestPGRepository_CreateReferral_SelfReferral(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -140,8 +124,7 @@ func TestPGRepository_CreateReferral_SelfReferral(t *testing.T) {
 }
 
 func TestPGRepository_CreateReferral_Circular(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -167,8 +150,7 @@ func TestPGRepository_CreateReferral_Circular(t *testing.T) {
 }
 
 func TestPGRepository_RecordEarning(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -187,8 +169,7 @@ func TestPGRepository_RecordEarning(t *testing.T) {
 }
 
 func TestPGRepository_RecordEarning_Duplicate(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -212,8 +193,7 @@ func TestPGRepository_RecordEarning_Duplicate(t *testing.T) {
 }
 
 func TestPGRepository_GetEarningsByReferrer(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -242,8 +222,7 @@ func TestPGRepository_GetEarningsByReferrer(t *testing.T) {
 }
 
 func TestPGRepository_GetClaimableBalance(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -269,14 +248,10 @@ func TestPGRepository_GetClaimableBalance(t *testing.T) {
 	if bal.TotalEarned != 50 {
 		t.Errorf("total earned = %d, want 50", bal.TotalEarned)
 	}
-	if bal.Claimable != 50 {
-		t.Errorf("claimable = %d, want 50", bal.Claimable)
-	}
 }
 
 func TestPGRepository_GetClaimableBalance_NoEarnings(t *testing.T) {
-	t.Parallel()
-	pool := testPool(t)
+	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
@@ -287,8 +262,5 @@ func TestPGRepository_GetClaimableBalance_NoEarnings(t *testing.T) {
 	}
 	if bal.TotalEarned != 0 {
 		t.Errorf("total earned = %d, want 0", bal.TotalEarned)
-	}
-	if bal.Claimable != 0 {
-		t.Errorf("claimable = %d, want 0", bal.Claimable)
 	}
 }

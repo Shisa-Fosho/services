@@ -66,26 +66,18 @@ func (r *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
 
 // GetOrder retrieves an order by ID. Returns ErrNotFound if not found.
 func (r *PGRepository) GetOrder(ctx context.Context, id string) (*Order, error) {
-	o := &Order{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT id, maker, token_id, maker_amount, taker_amount, salt,
-			expiration, nonce, fee_rate_bps, side, signature_type,
-			signature, status, order_type, market_id, signature_hash,
-			created_at, updated_at
-		FROM orders WHERE id = $1`, id,
-	).Scan(
-		&o.ID, &o.Maker, &o.TokenID, &o.MakerAmount, &o.TakerAmount,
-		&o.Salt, &o.Expiration, &o.Nonce, &o.FeeRateBps, &o.Side,
-		&o.SignatureType, &o.Signature, &o.Status, &o.OrderType,
-		&o.MarketID, &o.SignatureHash, &o.CreatedAt, &o.UpdatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM orders WHERE id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("getting order %s: %w", id, err)
+	}
+	order, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Order])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting order %s: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting order %s: %w", id, err)
 	}
-	return o, nil
+	return order, nil
 }
 
 // ListOrdersByUser returns orders for a user, optionally filtered by statuses.
@@ -95,29 +87,23 @@ func (r *PGRepository) ListOrdersByUser(ctx context.Context, userAddress string,
 
 	if len(statuses) == 0 {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, maker, token_id, maker_amount, taker_amount, salt,
-				expiration, nonce, fee_rate_bps, side, signature_type,
-				signature, status, order_type, market_id, signature_hash,
-				created_at, updated_at
-			FROM orders WHERE maker = $1
-			ORDER BY created_at DESC`, userAddress,
+			`SELECT * FROM orders WHERE maker = $1 ORDER BY created_at DESC`,
+			userAddress,
 		)
 	} else {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, maker, token_id, maker_amount, taker_amount, salt,
-				expiration, nonce, fee_rate_bps, side, signature_type,
-				signature, status, order_type, market_id, signature_hash,
-				created_at, updated_at
-			FROM orders WHERE maker = $1 AND status = ANY($2)
-			ORDER BY created_at DESC`, userAddress, statusSlice(statuses),
+			`SELECT * FROM orders WHERE maker = $1 AND status = ANY($2) ORDER BY created_at DESC`,
+			userAddress, statusSlice(statuses),
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing orders for user %s: %w", userAddress, err)
 	}
-	defer rows.Close()
-
-	return scanOrders(rows)
+	orders, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Order])
+	if err != nil {
+		return nil, fmt.Errorf("scanning orders for user %s: %w", userAddress, err)
+	}
+	return orders, nil
 }
 
 // ListOrdersByMarket returns orders for a market, optionally filtered by statuses.
@@ -127,29 +113,23 @@ func (r *PGRepository) ListOrdersByMarket(ctx context.Context, marketID string, 
 
 	if len(statuses) == 0 {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, maker, token_id, maker_amount, taker_amount, salt,
-				expiration, nonce, fee_rate_bps, side, signature_type,
-				signature, status, order_type, market_id, signature_hash,
-				created_at, updated_at
-			FROM orders WHERE market_id = $1
-			ORDER BY created_at DESC`, marketID,
+			`SELECT * FROM orders WHERE market_id = $1 ORDER BY created_at DESC`,
+			marketID,
 		)
 	} else {
 		rows, err = r.pool.Query(ctx,
-			`SELECT id, maker, token_id, maker_amount, taker_amount, salt,
-				expiration, nonce, fee_rate_bps, side, signature_type,
-				signature, status, order_type, market_id, signature_hash,
-				created_at, updated_at
-			FROM orders WHERE market_id = $1 AND status = ANY($2)
-			ORDER BY created_at DESC`, marketID, statusSlice(statuses),
+			`SELECT * FROM orders WHERE market_id = $1 AND status = ANY($2) ORDER BY created_at DESC`,
+			marketID, statusSlice(statuses),
 		)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("listing orders for market %s: %w", marketID, err)
 	}
-	defer rows.Close()
-
-	return scanOrders(rows)
+	orders, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Order])
+	if err != nil {
+		return nil, fmt.Errorf("scanning orders for market %s: %w", marketID, err)
+	}
+	return orders, nil
 }
 
 // UpdateOrderStatus changes the status of an order. Returns ErrNotFound if the
@@ -333,28 +313,6 @@ func (r *PGRepository) CreditAvailable(ctx context.Context, userAddress string, 
 	return nil
 }
 
-// scanOrders collects rows into a slice of orders.
-func scanOrders(rows pgx.Rows) ([]*Order, error) {
-	var orders []*Order
-	for rows.Next() {
-		o := &Order{}
-		err := rows.Scan(
-			&o.ID, &o.Maker, &o.TokenID, &o.MakerAmount, &o.TakerAmount,
-			&o.Salt, &o.Expiration, &o.Nonce, &o.FeeRateBps, &o.Side,
-			&o.SignatureType, &o.Signature, &o.Status, &o.OrderType,
-			&o.MarketID, &o.SignatureHash, &o.CreatedAt, &o.UpdatedAt,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scanning order row: %w", err)
-		}
-		orders = append(orders, o)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating order rows: %w", err)
-	}
-	return orders, nil
-}
-
 // statusSlice converts OrderStatus values to int16 for pgx ANY() binding.
 func statusSlice(statuses []OrderStatus) []int16 {
 	out := make([]int16, len(statuses))
@@ -363,4 +321,3 @@ func statusSlice(statuses []OrderStatus) []int16 {
 	}
 	return out
 }
-

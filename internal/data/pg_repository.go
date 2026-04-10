@@ -21,9 +21,13 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 	return &PGRepository{pool: pool}
 }
 
-// CreateUser persists a new user. Returns ErrDuplicateUser if the address,
-// username, or email already exists.
+// CreateUser persists a new user. Validates input via ValidateUser before
+// persisting. Returns ErrInvalidUser for shape violations, ErrDuplicateUser
+// if the address, username, or email already exists.
 func (r *PGRepository) CreateUser(ctx context.Context, user *User) error {
+	if err := ValidateUser(user); err != nil {
+		return fmt.Errorf("creating user: %w", err)
+	}
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO users (
 			address, username, email, signup_method, safe_address,
@@ -44,48 +48,42 @@ func (r *PGRepository) CreateUser(ctx context.Context, user *User) error {
 
 // GetUserByAddress retrieves a user by Ethereum address.
 func (r *PGRepository) GetUserByAddress(ctx context.Context, address string) (*User, error) {
-	u := &User{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT address, username, email, signup_method, safe_address,
-			proxy_address, twofa_secret_encrypted, twofa_enabled, created_at
-		FROM users WHERE address = $1`, address,
-	).Scan(
-		&u.Address, &u.Username, &u.Email, &u.SignupMethod,
-		&u.SafeAddress, &u.ProxyAddress,
-		&u.TwoFASecretEncrypted, &u.TwoFAEnabled, &u.CreatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM users WHERE address = $1`, address)
+	if err != nil {
+		return nil, fmt.Errorf("getting user %s: %w", address, err)
+	}
+	user, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[User])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting user %s: %w", address, ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting user %s: %w", address, err)
 	}
-	return u, nil
+	return user, nil
 }
 
 // GetUserByEmail retrieves a user by email address.
 func (r *PGRepository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	u := &User{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT address, username, email, signup_method, safe_address,
-			proxy_address, twofa_secret_encrypted, twofa_enabled, created_at
-		FROM users WHERE email = $1`, email,
-	).Scan(
-		&u.Address, &u.Username, &u.Email, &u.SignupMethod,
-		&u.SafeAddress, &u.ProxyAddress,
-		&u.TwoFASecretEncrypted, &u.TwoFAEnabled, &u.CreatedAt,
-	)
+	rows, err := r.pool.Query(ctx, `SELECT * FROM users WHERE email = $1`, email)
+	if err != nil {
+		return nil, fmt.Errorf("getting user by email: %w", err)
+	}
+	user, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[User])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting user by email: %w", ErrNotFound)
 		}
 		return nil, fmt.Errorf("getting user by email: %w", err)
 	}
-	return u, nil
+	return user, nil
 }
 
 // UpsertPosition creates or updates a position for a user in a market.
+// Validates input via ValidatePosition before persisting.
 func (r *PGRepository) UpsertPosition(ctx context.Context, pos *Position) error {
+	if err := ValidatePosition(pos); err != nil {
+		return fmt.Errorf("upserting position: %w", err)
+	}
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO positions (user_address, market_id, side, size, average_entry_price, realised_pnl)
 		 VALUES ($1, $2, $3, $4, $5, $6)
@@ -106,29 +104,30 @@ func (r *PGRepository) UpsertPosition(ctx context.Context, pos *Position) error 
 // GetPositionsByUser returns all positions for a given user address.
 func (r *PGRepository) GetPositionsByUser(ctx context.Context, userAddress string) ([]*Position, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT user_address, market_id, side, size, average_entry_price, realised_pnl
-		FROM positions WHERE user_address = $1
-		ORDER BY market_id`, userAddress,
+		`SELECT * FROM positions WHERE user_address = $1 ORDER BY market_id`,
+		userAddress,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing positions for user %s: %w", userAddress, err)
 	}
-	defer rows.Close()
-
-	return scanPositions(rows)
+	positions, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Position])
+	if err != nil {
+		return nil, fmt.Errorf("scanning positions for user %s: %w", userAddress, err)
+	}
+	return positions, nil
 }
 
 // GetPosition retrieves a single position by its composite key.
 func (r *PGRepository) GetPosition(ctx context.Context, userAddress string, marketID string, side Side) (*Position, error) {
-	p := &Position{}
-	err := r.pool.QueryRow(ctx,
-		`SELECT user_address, market_id, side, size, average_entry_price, realised_pnl
-		FROM positions WHERE user_address = $1 AND market_id = $2 AND side = $3`,
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM positions WHERE user_address = $1 AND market_id = $2 AND side = $3`,
 		userAddress, marketID, side,
-	).Scan(
-		&p.UserAddress, &p.MarketID, &p.Side,
-		&p.Size, &p.AverageEntryPrice, &p.RealisedPnL,
 	)
+	if err != nil {
+		return nil, fmt.Errorf("getting position for %s in market %s: %w",
+			userAddress, marketID, err)
+	}
+	position, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Position])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("getting position for %s in market %s: %w",
@@ -137,25 +136,5 @@ func (r *PGRepository) GetPosition(ctx context.Context, userAddress string, mark
 		return nil, fmt.Errorf("getting position for %s in market %s: %w",
 			userAddress, marketID, err)
 	}
-	return p, nil
-}
-
-// scanPositions collects rows into a slice of positions.
-func scanPositions(rows pgx.Rows) ([]*Position, error) {
-	var positions []*Position
-	for rows.Next() {
-		p := &Position{}
-		err := rows.Scan(
-			&p.UserAddress, &p.MarketID, &p.Side,
-			&p.Size, &p.AverageEntryPrice, &p.RealisedPnL,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("scanning position row: %w", err)
-		}
-		positions = append(positions, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating position rows: %w", err)
-	}
-	return positions, nil
+	return position, nil
 }

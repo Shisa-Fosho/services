@@ -41,7 +41,17 @@
       "Bash(grep -v '^\\\\\\\\\\\\\\(un\\\\\\)\\\\?restrict')",
       "Bash(grep -v '^--$')",
       "Bash(grep -v '\\\\\\\\restrict')",
-      "Bash(grep -v '\\\\\\\\unrestrict')"
+      "Bash(grep -v '\\\\\\\\unrestrict')",
+      "Bash(gh label:*)",
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration ./internal/market/... ./internal/data/... ./internal/affiliate/... ./internal/trading/...)",
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 ./internal/market/... ./internal/data/... ./internal/affiliate/... ./internal/trading/...)",
+      "Bash(docker exec:*)",
+      "WebSearch",
+      "WebFetch(domain:martinfowler.com)",
+      "WebFetch(domain:www.citusdata.com)",
+      "WebFetch(domain:thoughtbot.com)",
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 -count=1 ./internal/market/... ./internal/data/... ./internal/affiliate/... ./internal/trading/...)",
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 -count=1 ./internal/...)"
     ]
   },
   "outputStyle": "Learning"
