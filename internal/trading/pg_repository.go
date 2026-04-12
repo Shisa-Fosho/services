@@ -42,7 +42,7 @@ func (r *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
 		return ErrDuplicateOrder
 	}
 
-	_, err = tx.Exec(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO orders (
 			maker, token_id, maker_amount, taker_amount, salt,
 			expiration, nonce, fee_rate_bps, side, signature_type,
@@ -53,7 +53,7 @@ func (r *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
 		order.Salt, order.Expiration, order.Nonce, order.FeeRateBps,
 		order.Side, order.SignatureType, order.Signature,
 		order.Status, order.OrderType, order.MarketID, order.SignatureHash,
-	)
+	).Scan(&order.ID, &order.CreatedAt, &order.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("saving order: inserting row: %w", err)
 	}
@@ -132,6 +132,24 @@ func (r *PGRepository) ListOrdersByMarket(ctx context.Context, marketID string, 
 	return orders, nil
 }
 
+// ListOpenOrders returns all orders with status OPEN or PARTIALLY_FILLED across
+// every market, ordered by created_at ascending. The ascending order preserves
+// original time priority when the matching engine rebuilds books on startup.
+func (r *PGRepository) ListOpenOrders(ctx context.Context) ([]*Order, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM orders WHERE status = ANY($1) ORDER BY created_at ASC, id ASC`,
+		statusSlice([]OrderStatus{OrderStatusOpen, OrderStatusPartiallyFilled}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing open orders: %w", err)
+	}
+	orders, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[Order])
+	if err != nil {
+		return nil, fmt.Errorf("scanning open orders: %w", err)
+	}
+	return orders, nil
+}
+
 // UpdateOrderStatus changes the status of an order. Returns ErrNotFound if the
 // order does not exist.
 func (r *PGRepository) UpdateOrderStatus(ctx context.Context, id string, status OrderStatus) error {
@@ -169,15 +187,16 @@ func (r *PGRepository) SaveTrade(ctx context.Context, trade *Trade) error {
 		return ErrDuplicateTrade
 	}
 
-	_, err = tx.Exec(ctx,
+	err = tx.QueryRow(ctx,
 		`INSERT INTO trades (
 			match_id, maker_order_id, taker_order_id, maker_address,
 			taker_address, market_id, price, size, maker_fee, taker_fee
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		RETURNING id, created_at`,
 		trade.MatchID, trade.MakerOrderID, trade.TakerOrderID,
 		trade.MakerAddress, trade.TakerAddress, trade.MarketID,
 		trade.Price, trade.Size, trade.MakerFee, trade.TakerFee,
-	)
+	).Scan(&trade.ID, &trade.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("saving trade: inserting row: %w", err)
 	}

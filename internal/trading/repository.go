@@ -20,6 +20,11 @@ type Repository interface {
 	// statuses. If statuses is empty, all orders are returned.
 	ListOrdersByMarket(ctx context.Context, marketID string, statuses []OrderStatus) ([]*Order, error)
 
+	// ListOpenOrders returns all orders with status OPEN or PARTIALLY_FILLED
+	// across every market, ordered by created_at ascending. Used by the
+	// matching engine to rebuild in-memory books on startup.
+	ListOpenOrders(ctx context.Context) ([]*Order, error)
+
 	// UpdateOrderStatus changes the status of an existing order.
 	// Returns ErrNotFound if the order does not exist.
 	UpdateOrderStatus(ctx context.Context, id string, status OrderStatus) error

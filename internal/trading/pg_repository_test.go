@@ -196,6 +196,69 @@ func TestPGRepository_ListOrdersByMarket(t *testing.T) {
 	}
 }
 
+func TestPGRepository_ListOpenOrders(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	marketA := "a0000000-0000-0000-0000-000000000001"
+	marketB := "b0000000-0000-0000-0000-000000000002"
+
+	// Seed a mix across statuses and markets. Only OPEN + PARTIALLY_FILLED
+	// should come back.
+	seeds := []struct {
+		status OrderStatus
+		market string
+	}{
+		{OrderStatusOpen, marketA},
+		{OrderStatusFilled, marketA},
+		{OrderStatusPartiallyFilled, marketB},
+		{OrderStatusCancelled, marketA},
+		{OrderStatusOpen, marketB},
+	}
+
+	for i, s := range seeds {
+		o := &Order{
+			Maker:         "0xopen",
+			TokenID:       "token-1",
+			MakerAmount:   40,
+			TakerAmount:   60,
+			Salt:          fmt.Sprintf("salt-open-%d", i),
+			Signature:     fmt.Sprintf("sig-open-%d", i),
+			Status:        s.status,
+			OrderType:     OrderTypeGTC,
+			MarketID:      s.market,
+			SignatureHash: fmt.Sprintf("hash-open-%d", i),
+		}
+		if err := repo.SaveOrder(ctx, o); err != nil {
+			t.Fatalf("SaveOrder %d: %v", i, err)
+		}
+	}
+
+	open, err := repo.ListOpenOrders(ctx)
+	if err != nil {
+		t.Fatalf("ListOpenOrders: %v", err)
+	}
+	if len(open) != 3 {
+		t.Fatalf("expected 3 open/partial orders, got %d", len(open))
+	}
+
+	// Every returned order must be OPEN or PARTIALLY_FILLED.
+	for _, o := range open {
+		if o.Status != OrderStatusOpen && o.Status != OrderStatusPartiallyFilled {
+			t.Errorf("unexpected status %v in ListOpenOrders result", o.Status)
+		}
+	}
+
+	// Must be sorted ascending by CreatedAt so rebuild preserves time priority.
+	for i := 1; i < len(open); i++ {
+		if open[i].CreatedAt.Before(open[i-1].CreatedAt) {
+			t.Errorf("ListOpenOrders not sorted ASC by created_at at index %d", i)
+		}
+	}
+}
+
 func TestPGRepository_UpdateOrderStatus(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
