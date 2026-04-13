@@ -29,4 +29,18 @@ type Repository interface {
 	// GetPosition retrieves a single position by its composite key.
 	// Returns ErrNotFound if not found.
 	GetPosition(ctx context.Context, userAddress string, marketID string, side Side) (*Position, error)
+
+	// StoreRefreshToken persists a new refresh token.
+	StoreRefreshToken(ctx context.Context, token *RefreshToken) error
+
+	// GetRefreshToken retrieves a refresh token by ID.
+	// Returns ErrNotFound if not found.
+	GetRefreshToken(ctx context.Context, id string) (*RefreshToken, error)
+
+	// RevokeRefreshToken marks a refresh token as revoked.
+	// Returns ErrNotFound if the token does not exist.
+	RevokeRefreshToken(ctx context.Context, id string) error
+
+	// RevokeAllRefreshTokens revokes all active refresh tokens for a user.
+	RevokeAllRefreshTokens(ctx context.Context, userAddress string) error
 }

@@ -138,3 +138,60 @@ func (r *PGRepository) GetPosition(ctx context.Context, userAddress string, mark
 	}
 	return position, nil
 }
+
+// StoreRefreshToken persists a new refresh token.
+func (r *PGRepository) StoreRefreshToken(ctx context.Context, token *RefreshToken) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO refresh_tokens (id, user_address, expires_at)
+		 VALUES ($1, $2, $3)`,
+		token.ID, token.UserAddress, token.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("storing refresh token: %w", err)
+	}
+	return nil
+}
+
+// GetRefreshToken retrieves a refresh token by ID.
+func (r *PGRepository) GetRefreshToken(ctx context.Context, id string) (*RefreshToken, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM refresh_tokens WHERE id = $1`, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getting refresh token: %w", err)
+	}
+	token, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[RefreshToken])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("getting refresh token %s: %w", id, ErrNotFound)
+		}
+		return nil, fmt.Errorf("getting refresh token: %w", err)
+	}
+	return token, nil
+}
+
+// RevokeRefreshToken marks a refresh token as revoked.
+func (r *PGRepository) RevokeRefreshToken(ctx context.Context, id string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked = true WHERE id = $1`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking refresh token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("revoking refresh token %s: %w", id, ErrNotFound)
+	}
+	return nil
+}
+
+// RevokeAllRefreshTokens revokes all active refresh tokens for a user.
+func (r *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddress string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked = true
+		 WHERE user_address = $1 AND revoked = false`, userAddress,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking all refresh tokens for %s: %w", userAddress, err)
+	}
+	return nil
+}
