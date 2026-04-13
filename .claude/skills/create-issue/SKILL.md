@@ -178,24 +178,16 @@ gh project item-edit --project-id PVT_kwDOEC3v5M4BUX8i --id <item_id> --field-id
 ### 5c. Renumber downstream items if needed
 If the insertion required renumbering (not using .N subtask notation), update all affected items' Build Order numbers.
 
-### 5d. Update Notion Build Order doc
-```
-notion-update-page: 33092032f61981b6b762de2bab90eaf8
-```
-- Add the new item to the Issue Key table in the correct position
-- Add it to the Blocking Dependencies table
-- Update any existing items whose "blocks" column should now include the new issue
-
-### 5e. Update Notion Technical & Product Plan (if applicable)
-```
-notion-update-page: 32b92032f619811aa868f4d75f5017c8
-```
-- Add issue number references in the relevant section for traceability
-- Only update if the new issue maps to a specific section in the tech plan
+### 5d. Run `/align-planning`
+Invoke the `align-planning` skill to sync the new issue into Notion docs and verify full cross-source consistency. This handles:
+- Adding the item to the Notion Build Order Issue Key table and Blocking Dependencies table
+- Updating the Notion Technical Plan if the issue maps to a specific section
+- Verifying all dependencies are bidirectional and order-consistent
+- Catching any drift introduced by the new issue
 
 ## Step 6: Report
 
-Provide a concise summary of everything that changed:
+Provide a concise summary of what was created:
 
 ```
 ## Issue Created
@@ -205,18 +197,6 @@ Provide a concise summary of everything that changed:
 - **Labels:** <labels>
 - **Blocked by:** <refs>
 - **Blocks:** <refs>
-
-## Project Board Changes
-- Added #<number> at BO=<N>, Phase <X>
-- <any renumbered items>
-
-## Notion Updates
-- Build Order doc: added to Issue Key table and Blocking Dependencies table
-- Technical Plan: <what was updated, or "no changes needed">
-
-## Consistency Check
-- ✓ All blocked-by items have lower build order
-- ✓ All blocks items have higher build order
-- ✓ No duplicate/overlapping issues
-- ✓ Notion and GitHub are aligned
 ```
+
+The alignment report from `/align-planning` covers Notion updates and consistency verification.
