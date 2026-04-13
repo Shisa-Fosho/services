@@ -3,6 +3,8 @@ module github.com/Shisa-Fosho/services
 go 1.25.5
 
 require (
+	github.com/ethereum/go-ethereum v1.17.2
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/nats-io/nats.go v1.50.0
@@ -26,7 +28,6 @@ require (
 	github.com/crate-crypto/go-eth-kzg v1.5.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
-	github.com/ethereum/go-ethereum v1.17.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect

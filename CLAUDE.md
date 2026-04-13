@@ -10,19 +10,29 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 ┌─────────────────────────────────────────────┐
 │              External Clients               │
 │         (Web App, Bots, Admin App)          │
-└──────────┬──────────────────┬───────────────┘
-           │ REST + WebSocket │ REST
-           ▼                  ▼
+└─────────────────┬───────────────────────────┘
+                  │ All traffic
+                  ▼
+         ┌────────────────┐
+         │  Nginx :8000   │
+         │  Reverse Proxy │
+         └───┬────────┬───┘
+             │        │
+  /orders,   │        │ /auth, /admin,
+  /book, /ws │        │ /markets, /data
+             ▼        ▼
 ┌─────────────────┐  ┌─────────────────┐
 │ Trading Service │  │ Platform Service│
 │ :8080 (HTTP)    │  │ :8081 (HTTP)    │
 │ :9001 (gRPC)    │  │ :9002 (gRPC)    │
 │ (metrics :9091) │  │ (metrics :9092) │
 │                 │  │                 │
-│ • CLOB Engine   │  │ • Market API    │
-│ • REST API      │  │ • Data API      │
-│ • WebSocket     │  │ • Admin API     │
-│ • Auth          │  │ • Affiliate     │
+│ • CLOB Engine   │  │ • Auth (SIWE,   │
+│ • REST API      │  │   JWT, signup)  │
+│ • WebSocket     │  │ • Market API    │
+│                 │  │ • Data API      │
+│                 │  │ • Admin API     │
+│                 │  │ • Affiliate     │
 └────────┬────────┘  └────────┬────────┘
          │ gRPC               │
          │    ┌───────────────┘
@@ -53,8 +63,9 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 
 | Service | Responsibility | HTTP Port | gRPC Port | Metrics Port |
 |---------|---------------|-----------|-----------|--------------|
-| Trading | CLOB engine, REST API, WebSocket, Auth | 8080 | 9001 | 9091 |
-| Platform | Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
+| Nginx | Reverse proxy, route to upstream services | 8000 | — | — |
+| Trading | CLOB engine, REST API, WebSocket | 8080 | 9001 | 9091 |
+| Platform | Auth, Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
 | Settlement Worker | On-chain trade settlement, relayer | — | 9003 | 9093 |
 | Indexer | On-chain event monitoring, deposits | — | 9004 | 9094 |
 
@@ -91,25 +102,26 @@ cmd/                        # Service entry points (main.go per service)
   ├── trading/
   ├── platform/
   ├── settlement/
-  └── indexer/
+  ├── indexer/
+  ├── resolution/           # Resolution worker (deferred — scaffold only)
+  └── migrate/              # Migration CLI tool (up/down/status)
 internal/
   ├── platform/             # Shared infrastructure packages
   │   ├── observability/    # Logger, metrics, tracing, context utilities
   │   ├── grpc/             # gRPC server/client helpers, interceptors
   │   ├── nats/             # NATS client, JetStream helpers, instrumentation
   │   ├── postgres/         # Connection pooling, migration helpers
-  │   └── auth/             # JWT, HMAC, SIWE verification
-  ├── trading/              # Trading service domain
-  │   ├── engine/           # CLOB matching engine (in-memory order book)
-  │   ├── api/              # REST handlers
-  │   ├── ws/               # WebSocket server
-  │   └── domain.go         # Order, Trade, Book types
+  │   ├── auth/             # JWT, SIWE verification, auth middleware
+  │   ├── httputil/         # JSON helpers, HTTP middleware (RequestID, Logging, Recovery)
+  │   └── eth/              # Ethereum utilities (address validation, Safe address derivation)
+  ├── trading/              # Trading service domain (Order, Trade, Book, Balance)
   ├── market/               # Platform service — market domain
   ├── data/                 # Platform service — user data domain
   ├── admin/                # Platform service — admin domain
   ├── affiliate/            # Platform service — referral system
   ├── settlement/           # Settlement worker domain
-  └── indexer/              # Indexer domain
+  ├── indexer/              # Indexer domain
+  └── resolution/           # Resolution worker domain (deferred)
 proto/                      # Protobuf definitions
   ├── trading/v1/
   ├── platform/v1/
@@ -193,6 +205,11 @@ return tx.Commit(ctx)
 - Core NATS for ephemeral fan-out (book updates, price changes)
 - Always propagate OpenTelemetry trace context in message headers
 
+### Dependencies
+- **Before adding a new Go module**, always check `go.mod` and existing `internal/platform/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
+- Prefer using existing dependencies over adding new ones. If an existing library provides the required primitives, implement on top of it rather than pulling in a wrapper package.
+- During planning, explicitly audit `go.mod` for overlap before proposing any `go get`.
+
 ## Service Bootstrap Pattern
 
 Every service follows this structure in `cmd/<service>/main.go`:
@@ -223,6 +240,8 @@ Every service follows this structure in `cmd/<service>/main.go`:
 4. **Instant confirmation** — off-chain ledger updated on match, settlement in background
 5. **NATS for all async** — JetStream (durable) + Core (ephemeral)
 6. **PostgreSQL JSONB** — flexible market config, resolution parameters
+7. **Centralized auth issuance, distributed verification** — Platform service owns auth endpoints (signup, login, refresh); all services verify JWTs locally using the shared `internal/platform/auth` package and the same HMAC secret. No cross-service call for token validation.
+8. **Nginx reverse proxy** — single entry point (:8000), routes `/auth`, `/admin`, `/markets`, `/data` → platform and `/orders`, `/book`, `/ws` → trading
 
 ## Git Conventions
 
@@ -252,6 +271,7 @@ ABIs consumed from the `contracts` repo via copy. No import dependency.
 
 | Infrastructure | Port | Purpose |
 |---------------|------|---------|
+| Nginx | 8000 | Reverse proxy (single entry point) |
 | PostgreSQL | 5432 | Primary data store |
 | NATS | 4222 | Messaging (client) |
 | NATS | 8222 | NATS monitoring |

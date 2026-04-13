@@ -13,7 +13,13 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/Shisa-Fosho/services/internal/data"
+	"github.com/Shisa-Fosho/services/internal/platform/auth"
+	"github.com/Shisa-Fosho/services/internal/platform/eth"
 	platformgrpc "github.com/Shisa-Fosho/services/internal/platform/grpc"
+	"github.com/Shisa-Fosho/services/internal/platform/httputil"
 	platformnats "github.com/Shisa-Fosho/services/internal/platform/nats"
 	"github.com/Shisa-Fosho/services/internal/platform/observability"
 	"github.com/Shisa-Fosho/services/internal/platform/postgres"
@@ -80,6 +86,34 @@ func run() error {
 	}
 	defer nc.Close()
 
+	// Auth dependencies.
+	jwtCfg := auth.JWTConfig{
+		AccessSecret:  []byte(mustGetEnv("JWT_ACCESS_SECRET")),
+		RefreshSecret: []byte(mustGetEnv("JWT_REFRESH_SECRET")),
+		AccessTTL:     15 * time.Minute,
+		RefreshTTL:    7 * 24 * time.Hour,
+		Issuer:        "shisa-platform",
+	}
+	jwtMgr, err := auth.NewJWTManager(jwtCfg)
+	if err != nil {
+		return fmt.Errorf("creating jwt manager: %w", err)
+	}
+
+	siweDomain := getEnv("SIWE_DOMAIN", "localhost")
+	siweVerifier := auth.NewSIWEVerifier(auth.SIWEConfig{
+		Domain: siweDomain,
+	})
+
+	safeCfg := eth.SafeConfig{
+		FactoryAddress:   common.HexToAddress(getEnv("SAFE_FACTORY_ADDRESS", "0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2")),
+		SingletonAddress: common.HexToAddress(getEnv("SAFE_SINGLETON_ADDRESS", "0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552")),
+		FallbackHandler:  common.HexToAddress(getEnv("SAFE_FALLBACK_HANDLER", "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4")),
+	}
+
+	repo := data.NewPGRepository(pool)
+	secureCookies := siweDomain != "localhost"
+	authHandler := auth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
+
 	// gRPC server.
 	hs := health.NewServer()
 	checker := platformgrpc.NewPoolHealthChecker(pool)
@@ -95,9 +129,17 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	authHandler.RegisterRoutes(mux)
+
+	// Middleware stack (outermost first): Recovery → RequestID → Logging.
+	var handler http.Handler = mux
+	handler = httputil.Logging(logger)(handler)
+	handler = httputil.RequestID(handler)
+	handler = httputil.Recovery(logger)(handler)
+
 	httpSrv := &http.Server{
 		Addr:              ":" + httpPort,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -150,6 +192,14 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func mustGetEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		panic(fmt.Sprintf("required environment variable %s is not set", key))
+	}
+	return v
 }
 
 // platformServer implements the placeholder PlatformService.

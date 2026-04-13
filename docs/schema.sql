@@ -192,6 +192,19 @@ CREATE TABLE public.referrals (
 
 
 --
+-- Name: refresh_tokens; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.refresh_tokens (
+    id text NOT NULL,
+    user_address text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: schema_migrations_platform; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -363,6 +376,14 @@ ALTER TABLE ONLY public.referrals
 
 
 --
+-- Name: refresh_tokens refresh_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refresh_tokens
+    ADD CONSTRAINT refresh_tokens_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: schema_migrations_platform schema_migrations_platform_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -525,6 +546,20 @@ CREATE INDEX idx_referrals_referrer ON public.referrals USING btree (referrer_ad
 
 
 --
+-- Name: idx_refresh_tokens_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_refresh_tokens_active ON public.refresh_tokens USING btree (expires_at) WHERE (revoked = false);
+
+
+--
+-- Name: idx_refresh_tokens_user_address; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_refresh_tokens_user_address ON public.refresh_tokens USING btree (user_address);
+
+
+--
 -- Name: idx_trades_created_at; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -603,6 +638,14 @@ ALTER TABLE ONLY public.positions
 
 ALTER TABLE ONLY public.positions
     ADD CONSTRAINT positions_user_address_fkey FOREIGN KEY (user_address) REFERENCES public.users(address);
+
+
+--
+-- Name: refresh_tokens refresh_tokens_user_address_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.refresh_tokens
+    ADD CONSTRAINT refresh_tokens_user_address_fkey FOREIGN KEY (user_address) REFERENCES public.users(address) ON DELETE CASCADE;
 
 
 --

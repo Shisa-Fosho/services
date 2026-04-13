@@ -51,7 +51,25 @@
       "WebFetch(domain:www.citusdata.com)",
       "WebFetch(domain:thoughtbot.com)",
       "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 -count=1 ./internal/market/... ./internal/data/... ./internal/affiliate/... ./internal/trading/...)",
-      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 -count=1 ./internal/...)"
+      "Bash(DATABASE_URL=\"postgres://shisa:shisa@localhost:5432/shisa?sslmode=disable\" go test -tags=integration -p 1 -count=1 ./internal/...)",
+      "Bash(gh project:*)",
+      "Bash(node -e \"const d=JSON.parse\\(require\\('fs'\\).readFileSync\\(0,'utf8'\\)\\); const i=d.items.find\\(x=>x.title.includes\\('Market Admin'\\)\\); if\\(i\\) console.log\\(i.id\\); else console.error\\('item not found'\\);\")",
+      "mcp__claude_ai_Notion__notion-fetch",
+      "Bash(python \"C:/dev/shisa-fosho/shisa-services/extract.py\")",
+      "Bash(python -c ':*)",
+      "Bash(node -e ':*)",
+      "Bash(node:*)",
+      "mcp__claude_ai_Notion__notion-update-page",
+      "Bash(start:*)",
+      "Bash(find /c/dev/shisa-fosho/shisa-services/cmd -type f -name \"*.go\" -exec head -30 {} +)",
+      "Bash(go list:*)",
+      "Bash(go mod:*)",
+      "Bash(go doc:*)",
+      "Bash(gofmt:*)",
+      "mcp__claude_ai_Notion__notion-search",
+      "Bash(tr '\\\\\\\\n' '\\\\n')",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)"
     ]
   },
   "outputStyle": "Learning"

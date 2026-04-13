@@ -13,6 +13,8 @@ var (
 	ErrDuplicateUser   = errors.New("duplicate user")
 	ErrInvalidUser     = errors.New("invalid user")
 	ErrInvalidPosition = errors.New("invalid position")
+	ErrTokenRevoked    = errors.New("token revoked")
+	ErrTokenExpired    = errors.New("token expired")
 )
 
 // SignupMethod represents how a user registered.
@@ -77,6 +79,15 @@ type User struct {
 	TwoFASecretEncrypted string       `db:"twofa_secret_encrypted"` // Encrypted 2FA secret (never logged).
 	TwoFAEnabled         bool         `db:"twofa_enabled"`
 	CreatedAt            time.Time    `db:"created_at"`
+}
+
+// RefreshToken represents a stored refresh token for session management.
+type RefreshToken struct {
+	ID          string    `db:"id"`           // JWT ID (jti).
+	UserAddress string    `db:"user_address"` // FK to users.address.
+	ExpiresAt   time.Time `db:"expires_at"`
+	Revoked     bool      `db:"revoked"`
+	CreatedAt   time.Time `db:"created_at"`
 }
 
 // Position represents a user's holding in a specific market and side.
