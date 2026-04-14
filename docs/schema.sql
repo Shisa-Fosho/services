@@ -66,6 +66,21 @@ CREATE TABLE public.affiliate_earnings (
 
 
 --
+-- Name: api_keys; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.api_keys (
+    key_hash text NOT NULL,
+    user_address text NOT NULL,
+    hmac_secret_encrypted text NOT NULL,
+    label text DEFAULT ''::text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    revoked boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: balances; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -288,6 +303,14 @@ ALTER TABLE ONLY public.affiliate_earnings
 
 
 --
+-- Name: api_keys api_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.api_keys
+    ADD CONSTRAINT api_keys_pkey PRIMARY KEY (key_hash);
+
+
+--
 -- Name: balances balances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -455,6 +478,20 @@ CREATE INDEX idx_affiliate_earnings_referrer ON public.affiliate_earnings USING 
 
 
 --
+-- Name: idx_api_keys_active; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_api_keys_active ON public.api_keys USING btree (expires_at) WHERE (revoked = false);
+
+
+--
+-- Name: idx_api_keys_user_address; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_api_keys_user_address ON public.api_keys USING btree (user_address);
+
+
+--
 -- Name: idx_events_category; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -606,6 +643,14 @@ CREATE INDEX idx_trades_taker_address ON public.trades USING btree (taker_addres
 --
 
 CREATE INDEX idx_users_email ON public.users USING btree (email) WHERE (email IS NOT NULL);
+
+
+--
+-- Name: api_keys api_keys_user_address_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.api_keys
+    ADD CONSTRAINT api_keys_user_address_fkey FOREIGN KEY (user_address) REFERENCES public.users(address) ON DELETE CASCADE;
 
 
 --

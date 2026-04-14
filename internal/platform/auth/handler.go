@@ -18,23 +18,25 @@ const refreshCookieName = "refresh_token"
 
 // Handler implements the auth REST endpoints.
 type Handler struct {
-	logger  *zap.Logger
-	repo    data.Repository
-	jwt     *JWTManager
-	siwe    MessageVerifier
-	safeCfg eth.SafeConfig
-	secure  bool // Set Secure flag on cookies (true for non-localhost).
+	logger    *zap.Logger
+	repo      data.Repository
+	jwt       *JWTManager
+	siwe      MessageVerifier
+	safeCfg   eth.SafeConfig
+	secure    bool // Set Secure flag on cookies (true for non-localhost).
+	apiKeyCfg APIKeyConfig
 }
 
 // NewHandler creates a new auth handler with all dependencies.
-func NewHandler(logger *zap.Logger, repo data.Repository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool) *Handler {
+func NewHandler(logger *zap.Logger, repo data.Repository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool, apiKeyCfg APIKeyConfig) *Handler {
 	return &Handler{
-		logger:  logger,
-		repo:    repo,
-		jwt:     jwt,
-		siwe:    siwe,
-		safeCfg: safeCfg,
-		secure:  secure,
+		logger:    logger,
+		repo:      repo,
+		jwt:       jwt,
+		siwe:      siwe,
+		safeCfg:   safeCfg,
+		secure:    secure,
+		apiKeyCfg: apiKeyCfg,
 	}
 }
 
@@ -46,6 +48,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/refresh", h.refresh)
 	mux.HandleFunc("POST /auth/logout", h.logout)
 	mux.Handle("GET /auth/session", Authenticate(h.jwt)(http.HandlerFunc(h.session)))
+	mux.Handle("POST /auth/derive-api-key", Authenticate(h.jwt)(http.HandlerFunc(h.deriveAPIKey)))
+	mux.Handle("DELETE /auth/api-key", Authenticate(h.jwt)(http.HandlerFunc(h.revokeAPIKey)))
+	mux.Handle("GET /auth/api-keys", Authenticate(h.jwt)(http.HandlerFunc(h.listAPIKeys)))
 }
 
 type nonceResponse struct {
@@ -252,6 +257,131 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 		Username:    user.Username,
 		SafeAddress: user.SafeAddress,
 	})
+}
+
+// API key types and handlers.
+
+const apiKeyTTL = 30 * 24 * time.Hour // 30 days.
+
+type deriveAPIKeyRequest struct {
+	Signature string `json:"signature"`
+	Timestamp string `json:"timestamp"`
+	Nonce     string `json:"nonce"`
+}
+
+type deriveAPIKeyResponse struct {
+	APIKey     string    `json:"api_key"`
+	HMACSecret string    `json:"hmac_secret"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req deriveAPIKeyRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Signature == "" || req.Timestamp == "" {
+		httputil.ErrorResponse(w, http.StatusBadRequest, "signature and timestamp are required")
+		return
+	}
+	if req.Nonce == "" {
+		req.Nonce = "0"
+	}
+
+	address := UserAddressFrom(r.Context())
+
+	sigBytes, err := VerifyEIP712Signature(address, req.Timestamp, req.Nonce, ClobAuthMessage, req.Signature, h.apiKeyCfg.ChainID)
+	if err != nil {
+		h.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
+		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
+		return
+	}
+
+	apiKey, hmacSecret := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
+	keyHash := HashAPIKey(apiKey)
+
+	encryptedSecret, err := EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
+	if err != nil {
+		h.internalError(w, "encrypting HMAC secret", err)
+		return
+	}
+
+	expiresAt := time.Now().Add(apiKeyTTL)
+	if err := h.repo.UpsertAPIKey(r.Context(), &data.APIKey{
+		KeyHash:             keyHash,
+		UserAddress:         address,
+		HMACSecretEncrypted: encryptedSecret,
+		ExpiresAt:           expiresAt,
+	}); err != nil {
+		h.internalError(w, "upserting api key", err)
+		return
+	}
+
+	_ = httputil.EncodeJSON(w, http.StatusOK, deriveAPIKeyResponse{
+		APIKey:     apiKey,
+		HMACSecret: hmacSecret,
+		ExpiresAt:  expiresAt,
+	})
+}
+
+type revokeAPIKeyRequest struct {
+	APIKey string `json:"api_key"`
+}
+
+func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	var req revokeAPIKeyRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.APIKey == "" {
+		httputil.ErrorResponse(w, http.StatusBadRequest, "api_key is required")
+		return
+	}
+
+	address := UserAddressFrom(r.Context())
+	keyHash := HashAPIKey(req.APIKey)
+
+	if err := h.repo.RevokeAPIKey(r.Context(), keyHash, address); err != nil {
+		if errors.Is(err, data.ErrNotFound) {
+			httputil.ErrorResponse(w, http.StatusNotFound, "api key not found")
+			return
+		}
+		h.internalError(w, "revoking api key", err)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type apiKeyListItem struct {
+	KeyHash   string    `json:"key_hash"`
+	Label     string    `json:"label"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+	address := UserAddressFrom(r.Context())
+
+	keys, err := h.repo.GetAPIKeysByUser(r.Context(), address)
+	if err != nil {
+		h.internalError(w, "listing api keys", err)
+		return
+	}
+
+	items := make([]apiKeyListItem, len(keys))
+	for i, k := range keys {
+		items[i] = apiKeyListItem{
+			KeyHash:   k.KeyHash,
+			Label:     k.Label,
+			ExpiresAt: k.ExpiresAt,
+			CreatedAt: k.CreatedAt,
+		}
+	}
+
+	_ = httputil.EncodeJSON(w, http.StatusOK, items)
 }
 
 // issueSession creates access + refresh tokens, stores the refresh token,

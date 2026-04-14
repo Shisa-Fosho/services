@@ -43,4 +43,16 @@ type Repository interface {
 
 	// RevokeAllRefreshTokens revokes all active refresh tokens for a user.
 	RevokeAllRefreshTokens(ctx context.Context, userAddress string) error
+
+	// UpsertAPIKey creates or updates an API key. On conflict (same key_hash),
+	// updates expires_at and hmac_secret_encrypted (idempotent re-derivation).
+	// Validates input via ValidateAPIKey before persisting.
+	UpsertAPIKey(ctx context.Context, key *APIKey) error
+
+	// GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.
+	GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error)
+
+	// RevokeAPIKey marks an API key as revoked by its key_hash.
+	// Returns ErrNotFound if the key does not exist or does not belong to the user.
+	RevokeAPIKey(ctx context.Context, keyHash string, userAddress string) error
 }
