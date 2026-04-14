@@ -206,7 +206,8 @@ func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 		`INSERT INTO api_keys (key_hash, user_address, hmac_secret_encrypted, label, expires_at)
 		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (key_hash)
-		 DO UPDATE SET expires_at = $5, hmac_secret_encrypted = $3`,
+		 DO UPDATE SET expires_at = $5, hmac_secret_encrypted = $3
+		 WHERE api_keys.user_address = $2`,
 		key.KeyHash, key.UserAddress, key.HMACSecretEncrypted, key.Label, key.ExpiresAt,
 	)
 	if err != nil {

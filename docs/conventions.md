@@ -90,6 +90,7 @@ Standard fields: `request_id`, `user_address`, `order_id`, `market_id`, `tx_id`,
 - Shared test helper: `postgres.TestPool(t)` from `internal/platform/postgres/testutil.go`
 - TDD: write tests first, `go build` to verify compilation, `go test` once implementation exists
 - Test naming: `TestFunctionName_Scenario` (e.g., `TestMatchOrders_InsufficientBalance`)
+- **Handler tests required** — every HTTP handler must have handler-level tests using `httptest.NewRecorder` + real mux routing. At minimum: one happy-path and one error-path test per endpoint. Auth-required endpoints must also test missing/invalid JWT.
 
 ### Validation
 Domain validators (`ValidateUser`, `ValidateMarket`, `ValidatePosition`, etc.) are package-level functions in `internal/<domain>/validate.go` that return an error wrapping a domain sentinel (e.g., `ErrInvalidPosition`).
