@@ -33,12 +33,14 @@ func (f *fakeVerifier) Verify(message, signature string) (string, error) {
 type fakeRepo struct {
 	users         map[string]*data.User
 	refreshTokens map[string]*data.RefreshToken
+	apiKeys       map[string]*data.APIKey
 }
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
 		users:         make(map[string]*data.User),
 		refreshTokens: make(map[string]*data.RefreshToken),
+		apiKeys:       make(map[string]*data.APIKey),
 	}
 }
 
@@ -106,6 +108,30 @@ func (r *fakeRepo) RevokeAllRefreshTokens(_ context.Context, userAddress string)
 	return nil
 }
 
+func (r *fakeRepo) UpsertAPIKey(_ context.Context, key *data.APIKey) error {
+	r.apiKeys[key.KeyHash] = key
+	return nil
+}
+
+func (r *fakeRepo) GetAPIKeysByUser(_ context.Context, userAddress string) ([]*data.APIKey, error) {
+	var result []*data.APIKey
+	for _, k := range r.apiKeys {
+		if k.UserAddress == userAddress && !k.Revoked {
+			result = append(result, k)
+		}
+	}
+	return result, nil
+}
+
+func (r *fakeRepo) RevokeAPIKey(_ context.Context, keyHash string, userAddress string) error {
+	k, ok := r.apiKeys[keyHash]
+	if !ok || k.UserAddress != userAddress || k.Revoked {
+		return data.ErrNotFound
+	}
+	k.Revoked = true
+	return nil
+}
+
 func testHandler(t *testing.T, repo *fakeRepo, verifier *fakeVerifier) *Handler {
 	t.Helper()
 	logger := zaptest.NewLogger(t)
@@ -118,7 +144,12 @@ func testHandler(t *testing.T, repo *fakeRepo, verifier *fakeVerifier) *Handler 
 		SingletonAddress: common.HexToAddress("0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552"),
 		FallbackHandler:  common.HexToAddress("0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4"),
 	}
-	return NewHandler(logger, repo, jwtMgr, verifier, safeCfg, false)
+	apiKeyCfg := APIKeyConfig{
+		DerivationSecret: []byte("test-derivation-secret-32-bytes!"),
+		EncryptionKey:    []byte("test-encryption-key-32-bytes!!xx"),
+		ChainID:          137,
+	}
+	return NewHandler(logger, repo, jwtMgr, verifier, safeCfg, false, apiKeyCfg)
 }
 
 func TestSignupWallet_Success(t *testing.T) {

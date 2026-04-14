@@ -195,3 +195,57 @@ func (r *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddress s
 	}
 	return nil
 }
+
+// UpsertAPIKey creates or updates an API key. On conflict (same key_hash),
+// updates expires_at and hmac_secret_encrypted (idempotent re-derivation).
+func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
+	if err := ValidateAPIKey(key); err != nil {
+		return fmt.Errorf("upserting api key: %w", err)
+	}
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO api_keys (key_hash, user_address, hmac_secret_encrypted, label, expires_at)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (key_hash)
+		 DO UPDATE SET expires_at = $5, hmac_secret_encrypted = $3
+		 WHERE api_keys.user_address = $2`,
+		key.KeyHash, key.UserAddress, key.HMACSecretEncrypted, key.Label, key.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("upserting api key for %s: %w", key.UserAddress, err)
+	}
+	return nil
+}
+
+// GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.
+func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM api_keys
+		 WHERE user_address = $1 AND revoked = false AND expires_at > now()
+		 ORDER BY created_at DESC`,
+		userAddress,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing api keys for %s: %w", userAddress, err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[APIKey])
+	if err != nil {
+		return nil, fmt.Errorf("scanning api keys for %s: %w", userAddress, err)
+	}
+	return keys, nil
+}
+
+// RevokeAPIKey marks an API key as revoked by its key_hash, scoped to user.
+func (r *PGRepository) RevokeAPIKey(ctx context.Context, keyHash string, userAddress string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE api_keys SET revoked = true
+		 WHERE key_hash = $1 AND user_address = $2 AND revoked = false`,
+		keyHash, userAddress,
+	)
+	if err != nil {
+		return fmt.Errorf("revoking api key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("revoking api key %s: %w", keyHash, ErrNotFound)
+	}
+	return nil
+}

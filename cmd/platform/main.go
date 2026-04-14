@@ -110,9 +110,18 @@ func run() error {
 		FallbackHandler:  common.HexToAddress(getEnv("SAFE_FALLBACK_HANDLER", "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4")),
 	}
 
+	apiKeyCfg := auth.APIKeyConfig{
+		DerivationSecret: []byte(mustGetEnv("APIKEY_DERIVATION_SECRET")),
+		EncryptionKey:    []byte(mustGetEnv("APIKEY_ENCRYPTION_KEY")),
+		ChainID:          137, // Polygon mainnet. Override via config for testnet/local.
+	}
+	if err := auth.ValidateAPIKeyConfig(apiKeyCfg); err != nil {
+		return fmt.Errorf("validating api key config: %w", err)
+	}
+
 	repo := data.NewPGRepository(pool)
 	secureCookies := siweDomain != "localhost"
-	authHandler := auth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
+	authHandler := auth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies, apiKeyCfg)
 
 	// gRPC server.
 	hs := health.NewServer()
