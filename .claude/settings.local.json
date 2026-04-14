@@ -73,7 +73,9 @@
       "Bash(xargs cat:*)",
       "Read(//dev/**)",
       "Bash(grep:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(golangci-lint run:*)",
+      "Bash(goimports:*)"
     ]
   },
   "outputStyle": "Learning"

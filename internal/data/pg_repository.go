@@ -216,6 +216,26 @@ func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 	return nil
 }
 
+// GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its hash.
+func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM api_keys
+		 WHERE key_hash = $1 AND revoked = false AND expires_at > now()`,
+		keyHash,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getting api key by hash: %w", err)
+	}
+	key, err := pgx.CollectExactlyOneRow(rows, pgx.RowToAddrOfStructByName[APIKey])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scanning api key by hash: %w", err)
+	}
+	return key, nil
+}
+
 // GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.
 func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error) {
 	rows, err := r.pool.Query(ctx,

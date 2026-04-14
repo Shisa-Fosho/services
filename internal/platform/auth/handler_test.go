@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/zap/zaptest"
 
@@ -106,6 +107,14 @@ func (r *fakeRepo) RevokeAllRefreshTokens(_ context.Context, userAddress string)
 		}
 	}
 	return nil
+}
+
+func (r *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*data.APIKey, error) {
+	k, ok := r.apiKeys[keyHash]
+	if !ok || k.Revoked || k.ExpiresAt.Before(time.Now()) {
+		return nil, data.ErrNotFound
+	}
+	return k, nil
 }
 
 func (r *fakeRepo) UpsertAPIKey(_ context.Context, key *data.APIKey) error {
