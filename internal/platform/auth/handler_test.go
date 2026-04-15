@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"go.uber.org/zap/zaptest"
-
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
+	"go.uber.org/zap/zaptest"
 
 	"github.com/Shisa-Fosho/services/internal/data"
 	"github.com/Shisa-Fosho/services/internal/platform/eth"
@@ -465,5 +466,340 @@ func TestNonce_ReturnsNonce(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Nonce == "" {
 		t.Error("expected non-empty nonce")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /auth/derive-api-key
+// ---------------------------------------------------------------------------
+
+// signedEIP712 generates a real EIP-712 ClobAuth signature using a freshly
+// generated private key. Returns the canonical address and hex-encoded sig.
+func signedEIP712(t *testing.T) (address string, sigHex string) {
+	t.Helper()
+
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generating key: %v", err)
+	}
+	address = crypto.PubkeyToAddress(key.PublicKey).Hex()
+
+	hash := eip712Hash(t, address)
+	sig, err := crypto.Sign(hash, key)
+	if err != nil {
+		t.Fatalf("signing EIP-712 hash: %v", err)
+	}
+
+	return address, "0x" + hex.EncodeToString(sig)
+}
+
+func TestDeriveAPIKey_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	address, sigHex := signedEIP712(t)
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	body := `{"signature":"` + sigHex + `","timestamp":"1700000000","nonce":"0"}`
+	r := httptest.NewRequest(http.MethodPost, "/auth/derive-api-key", strings.NewReader(body))
+	r = r.WithContext(WithUserAddress(r.Context(), address))
+	w := httptest.NewRecorder()
+
+	h.deriveAPIKey(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	var resp deriveAPIKeyResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp.APIKey == "" {
+		t.Error("expected non-empty api_key")
+	}
+	if resp.HMACSecret == "" {
+		t.Error("expected non-empty hmac_secret")
+	}
+	if resp.ExpiresAt.IsZero() {
+		t.Error("expected non-zero expires_at")
+	}
+	// Key should be persisted in the repo.
+	if len(repo.apiKeys) != 1 {
+		t.Errorf("repo apiKeys count = %d, want 1", len(repo.apiKeys))
+	}
+}
+
+func TestDeriveAPIKey_MissingFields(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	// Provides nonce only — signature and timestamp are required.
+	body := `{"nonce":"0"}`
+	r := httptest.NewRequest(http.MethodPost, "/auth/derive-api-key", strings.NewReader(body))
+	r = r.WithContext(WithUserAddress(r.Context(), "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
+	w := httptest.NewRecorder()
+
+	h.deriveAPIKey(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	// All-zero bytes: syntactically valid 65-byte hex but wrong signer.
+	badSig := "0x" + hex.EncodeToString(make([]byte, 65))
+
+	body := `{"signature":"` + badSig + `","timestamp":"1700000000","nonce":"0"}`
+	r := httptest.NewRequest(http.MethodPost, "/auth/derive-api-key", strings.NewReader(body))
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.deriveAPIKey(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestDeriveAPIKey_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	address, sigHex := signedEIP712(t)
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	body := `{"signature":"` + sigHex + `","timestamp":"1700000000","nonce":"0"}`
+
+	// call issues the request and returns the decoded response.
+	call := func() deriveAPIKeyResponse {
+		rq := httptest.NewRequest(http.MethodPost, "/auth/derive-api-key", strings.NewReader(body))
+		rq = rq.WithContext(WithUserAddress(rq.Context(), address))
+		rw := httptest.NewRecorder()
+		h.deriveAPIKey(rw, rq)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body: %s", rw.Code, http.StatusOK, rw.Body.String())
+		}
+		var resp deriveAPIKeyResponse
+		json.NewDecoder(rw.Body).Decode(&resp)
+		return resp
+	}
+
+	r1 := call()
+	r2 := call()
+
+	if r1.APIKey != r2.APIKey {
+		t.Errorf("api_key differs across calls: %q vs %q", r1.APIKey, r2.APIKey)
+	}
+	if r1.HMACSecret != r2.HMACSecret {
+		t.Errorf("hmac_secret differs across calls: %q vs %q", r1.HMACSecret, r2.HMACSecret)
+	}
+}
+
+func TestDeriveAPIKey_NoAuth(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	body := `{"signature":"0xdeadbeef","timestamp":"1700000000"}`
+	r := httptest.NewRequest(http.MethodPost, "/auth/derive-api-key", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer invalid-token")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /auth/api-key
+// ---------------------------------------------------------------------------
+
+func TestRevokeAPIKey_Success(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	rawKey := "test-api-key-value"
+	keyHash := HashAPIKey(rawKey)
+
+	repo := newFakeRepo()
+	repo.apiKeys[keyHash] = &data.APIKey{
+		KeyHash:     keyHash,
+		UserAddress: addr,
+	}
+
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	body := `{"api_key":"` + rawKey + `"}`
+	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.revokeAPIKey(w, r)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusNoContent, w.Body.String())
+	}
+	if !repo.apiKeys[keyHash].Revoked {
+		t.Error("expected api key to be marked revoked in repo")
+	}
+}
+
+func TestRevokeAPIKey_NotFound(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	body := `{"api_key":"does-not-exist"}`
+	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.revokeAPIKey(w, r)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestRevokeAPIKey_MissingField(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader("{}"))
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.revokeAPIKey(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /auth/api-keys
+// ---------------------------------------------------------------------------
+
+func TestListAPIKeys_WithKeys(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	repo := newFakeRepo()
+	repo.apiKeys["hash-one"] = &data.APIKey{KeyHash: "hash-one", UserAddress: addr}
+	repo.apiKeys["hash-two"] = &data.APIKey{KeyHash: "hash-two", UserAddress: addr}
+
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.listAPIKeys(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var items []apiKeyListItem
+	if err := json.NewDecoder(w.Body).Decode(&items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 2 {
+		t.Errorf("items count = %d, want 2", len(items))
+	}
+}
+
+func TestListAPIKeys_Empty(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.listAPIKeys(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	var items []apiKeyListItem
+	body := strings.TrimSpace(w.Body.String())
+	if err := json.Unmarshal([]byte(body), &items); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("items count = %d, want 0", len(items))
+	}
+}
+
+func TestListAPIKeys_SecretsStripped(t *testing.T) {
+	t.Parallel()
+
+	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	repo := newFakeRepo()
+	repo.apiKeys["hash-one"] = &data.APIKey{
+		KeyHash:             "hash-one",
+		UserAddress:         addr,
+		HMACSecretEncrypted: "super-secret-ciphertext",
+	}
+
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
+	w := httptest.NewRecorder()
+
+	h.listAPIKeys(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	// The encrypted secret must never appear in the response body.
+	if strings.Contains(w.Body.String(), "super-secret-ciphertext") {
+		t.Error("response must not include HMACSecretEncrypted")
+	}
+}
+
+func TestListAPIKeys_NoAuth(t *testing.T) {
+	t.Parallel()
+
+	repo := newFakeRepo()
+	h := testHandler(t, repo, &fakeVerifier{})
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	r.Header.Set("Authorization", "Bearer invalid-token")
+	w := httptest.NewRecorder()
+
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
 }
