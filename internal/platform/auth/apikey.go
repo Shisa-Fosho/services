@@ -123,10 +123,10 @@ func VerifyEIP712Signature(address, timestamp, nonce, message, signature string,
 	return sigBytes, nil
 }
 
-// DeriveAPIKey deterministically derives an API key and HMAC secret from
-// a server-side secret and the user's EIP-712 signature bytes.
+// DeriveAPIKey deterministically derives an API key, HMAC secret, and
+// passphrase from a server-side secret and the user's EIP-712 signature bytes.
 // Same inputs always produce the same outputs (idempotent).
-func DeriveAPIKey(secret, sigBytes []byte) (apiKey string, hmacSecret string) {
+func DeriveAPIKey(secret, sigBytes []byte) (apiKey, hmacSecret, passphrase string) {
 	mac1 := hmac.New(sha256.New, secret)
 	mac1.Write(append([]byte("api-key"), sigBytes...))
 	result1 := mac1.Sum(nil)
@@ -135,7 +135,11 @@ func DeriveAPIKey(secret, sigBytes []byte) (apiKey string, hmacSecret string) {
 	mac2.Write(append([]byte("hmac-secret"), sigBytes...))
 	result2 := mac2.Sum(nil)
 
-	return hex.EncodeToString(result1[:16]), hex.EncodeToString(result2)
+	mac3 := hmac.New(sha256.New, secret)
+	mac3.Write(append([]byte("passphrase"), sigBytes...))
+	result3 := mac3.Sum(nil)
+
+	return hex.EncodeToString(result1[:16]), hex.EncodeToString(result2), hex.EncodeToString(result3[:16])
 }
 
 // HashAPIKey returns the hex-encoded SHA-256 hash of an API key.

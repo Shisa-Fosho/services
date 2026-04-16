@@ -75,7 +75,8 @@
       "Bash(grep:*)",
       "Bash(find:*)",
       "Bash(golangci-lint run:*)",
-      "Bash(goimports:*)"
+      "Bash(goimports:*)",
+      "Bash(gh search:*)"
     ]
   },
   "outputStyle": "Learning"

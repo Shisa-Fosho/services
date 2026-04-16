@@ -272,6 +272,7 @@ type deriveAPIKeyRequest struct {
 type deriveAPIKeyResponse struct {
 	APIKey     string    `json:"api_key"`
 	HMACSecret string    `json:"hmac_secret"`
+	Passphrase string    `json:"passphrase"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
@@ -298,7 +299,7 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apiKey, hmacSecret := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
+	apiKey, hmacSecret, passphrase := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
 	keyHash := HashAPIKey(apiKey)
 
 	encryptedSecret, err := EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
@@ -312,6 +313,7 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 		KeyHash:             keyHash,
 		UserAddress:         address,
 		HMACSecretEncrypted: encryptedSecret,
+		PassphraseHash:      HashAPIKey(passphrase),
 		ExpiresAt:           expiresAt,
 	}); err != nil {
 		h.internalError(w, "upserting api key", err)
@@ -321,6 +323,7 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 	_ = httputil.EncodeJSON(w, http.StatusOK, deriveAPIKeyResponse{
 		APIKey:     apiKey,
 		HMACSecret: hmacSecret,
+		Passphrase: passphrase,
 		ExpiresAt:  expiresAt,
 	})
 }

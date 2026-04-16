@@ -19,14 +19,17 @@ func TestDeriveAPIKey_Deterministic(t *testing.T) {
 		sig[i] = byte(i)
 	}
 
-	key1, secret1 := DeriveAPIKey(testDerivationSecret, sig)
-	key2, secret2 := DeriveAPIKey(testDerivationSecret, sig)
+	key1, secret1, pass1 := DeriveAPIKey(testDerivationSecret, sig)
+	key2, secret2, pass2 := DeriveAPIKey(testDerivationSecret, sig)
 
 	if key1 != key2 {
 		t.Errorf("api keys differ: %q vs %q", key1, key2)
 	}
 	if secret1 != secret2 {
 		t.Errorf("hmac secrets differ: %q vs %q", secret1, secret2)
+	}
+	if pass1 != pass2 {
+		t.Errorf("passphrases differ: %q vs %q", pass1, pass2)
 	}
 }
 
@@ -37,8 +40,8 @@ func TestDeriveAPIKey_DifferentSignatures(t *testing.T) {
 	sig2 := make([]byte, 65)
 	sig2[0] = 0xFF
 
-	key1, secret1 := DeriveAPIKey(testDerivationSecret, sig1)
-	key2, secret2 := DeriveAPIKey(testDerivationSecret, sig2)
+	key1, secret1, pass1 := DeriveAPIKey(testDerivationSecret, sig1)
+	key2, secret2, pass2 := DeriveAPIKey(testDerivationSecret, sig2)
 
 	if key1 == key2 {
 		t.Error("different signatures should produce different api keys")
@@ -46,13 +49,16 @@ func TestDeriveAPIKey_DifferentSignatures(t *testing.T) {
 	if secret1 == secret2 {
 		t.Error("different signatures should produce different hmac secrets")
 	}
+	if pass1 == pass2 {
+		t.Error("different signatures should produce different passphrases")
+	}
 }
 
 func TestDeriveAPIKey_KeyLength(t *testing.T) {
 	t.Parallel()
 
 	sig := make([]byte, 65)
-	key, secret := DeriveAPIKey(testDerivationSecret, sig)
+	key, secret, passphrase := DeriveAPIKey(testDerivationSecret, sig)
 
 	// API key: 16 bytes hex-encoded = 32 chars.
 	if len(key) != 32 {
@@ -62,17 +68,27 @@ func TestDeriveAPIKey_KeyLength(t *testing.T) {
 	if len(secret) != 64 {
 		t.Errorf("hmac secret length = %d, want 64", len(secret))
 	}
+	// Passphrase: 16 bytes hex-encoded = 32 chars.
+	if len(passphrase) != 32 {
+		t.Errorf("passphrase length = %d, want 32", len(passphrase))
+	}
 }
 
 func TestDeriveAPIKey_KeyAndSecretDiffer(t *testing.T) {
 	t.Parallel()
 
 	sig := make([]byte, 65)
-	key, secret := DeriveAPIKey(testDerivationSecret, sig)
+	key, secret, passphrase := DeriveAPIKey(testDerivationSecret, sig)
 
-	// The API key should not be a prefix of the HMAC secret (different derivations).
+	// The three credentials must be distinct.
 	if secret[:32] == key {
 		t.Error("api key should not equal the first half of hmac secret")
+	}
+	if passphrase == key {
+		t.Error("passphrase should not equal api key")
+	}
+	if passphrase == secret[:32] {
+		t.Error("passphrase should not equal first half of hmac secret")
 	}
 }
 

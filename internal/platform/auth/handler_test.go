@@ -521,12 +521,23 @@ func TestDeriveAPIKey_HappyPath(t *testing.T) {
 	if resp.HMACSecret == "" {
 		t.Error("expected non-empty hmac_secret")
 	}
+	if resp.Passphrase == "" {
+		t.Error("expected non-empty passphrase")
+	}
 	if resp.ExpiresAt.IsZero() {
 		t.Error("expected non-zero expires_at")
 	}
 	// Key should be persisted in the repo.
 	if len(repo.apiKeys) != 1 {
 		t.Errorf("repo apiKeys count = %d, want 1", len(repo.apiKeys))
+	}
+	// Stored passphrase_hash must match the SHA-256 of the returned plaintext passphrase.
+	stored := repo.apiKeys[HashAPIKey(resp.APIKey)]
+	if stored == nil {
+		t.Fatal("derived key not stored")
+	}
+	if stored.PassphraseHash != HashAPIKey(resp.Passphrase) {
+		t.Error("stored passphrase hash does not match hash of returned passphrase")
 	}
 }
 
@@ -603,6 +614,9 @@ func TestDeriveAPIKey_Idempotent(t *testing.T) {
 	}
 	if r1.HMACSecret != r2.HMACSecret {
 		t.Errorf("hmac_secret differs across calls: %q vs %q", r1.HMACSecret, r2.HMACSecret)
+	}
+	if r1.Passphrase != r2.Passphrase {
+		t.Errorf("passphrase differs across calls: %q vs %q", r1.Passphrase, r2.Passphrase)
 	}
 }
 

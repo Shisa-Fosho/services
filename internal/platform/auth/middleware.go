@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,13 +19,14 @@ import (
 
 // Polymarket-compatible request headers for API key authentication.
 const (
-	HeaderAPIKey    = "POLY_API_KEY" //nolint:gosec // header name, not a credential
-	HeaderSignature = "POLY_SIGNATURE"
-	HeaderTimestamp = "POLY_TIMESTAMP"
-	HeaderNonce     = "POLY_NONCE"
+	HeaderAPIKey     = "POLY_API_KEY" //nolint:gosec // header name, not a credential
+	HeaderSignature  = "POLY_SIGNATURE"
+	HeaderTimestamp  = "POLY_TIMESTAMP"
+	HeaderPassphrase = "POLY_PASSPHRASE"
 )
 
 // maxTimestampDrift is the maximum allowed age of a signed request.
+// Replay protection within this window is accepted as a Polymarket-compatible trade-off.
 const maxTimestampDrift = 5 * time.Second
 
 // Authenticate returns HTTP middleware that validates the Authorization
@@ -49,12 +49,12 @@ func Authenticate(jwtMgr *JWTManager) func(http.Handler) http.Handler {
 // Middleware returns HTTP middleware that authenticates requests using
 // either HMAC-signed API keys (checked first) or JWT bearer tokens (fallback).
 // On success it injects the authenticated user address into the request context.
-func Middleware(jwtMgr *JWTManager, repo data.Repository, encryptionKey []byte, nonces *NonceTracker, logger *zap.Logger) func(http.Handler) http.Handler {
+func Middleware(jwtMgr *JWTManager, repo data.Repository, encryptionKey []byte, logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Try API key auth first.
 			if apiKey := r.Header.Get(HeaderAPIKey); apiKey != "" {
-				address, ok := authenticateAPIKey(w, r, apiKey, repo, encryptionKey, nonces, logger)
+				address, ok := authenticateAPIKey(w, r, apiKey, repo, encryptionKey, logger)
 				if !ok {
 					return // response already written
 				}
@@ -105,10 +105,9 @@ func authenticateJWT(w http.ResponseWriter, r *http.Request, jwtMgr *JWTManager)
 
 // authenticateAPIKey validates an HMAC-signed API key request. Returns the
 // user address on success, or writes a 401 response and returns false.
-func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, repo data.Repository, encryptionKey []byte, nonces *NonceTracker, logger *zap.Logger) (string, bool) {
+func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, repo data.Repository, encryptionKey []byte, logger *zap.Logger) (string, bool) {
 	timestamp := r.Header.Get(HeaderTimestamp)
 	signature := r.Header.Get(HeaderSignature)
-	nonce := r.Header.Get(HeaderNonce)
 
 	if timestamp == "" || signature == "" {
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "missing signature headers")
@@ -126,19 +125,19 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 		return "", false
 	}
 
-	// Check nonce replay.
-	nonceKey := apiKey + ":" + nonce + ":" + timestamp
-	if !nonces.Check(nonceKey) {
-		httputil.ErrorResponse(w, http.StatusUnauthorized, "replayed request")
-		return "", false
-	}
-
 	// Look up API key.
 	keyHash := HashAPIKey(apiKey)
 	stored, err := repo.GetAPIKeyByHash(r.Context(), keyHash)
 	if err != nil {
 		logger.Debug("api key lookup failed", zap.Error(err))
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
+		return "", false
+	}
+
+	// Verify passphrase (second factor alongside HMAC secret).
+	passphrase := r.Header.Get(HeaderPassphrase)
+	if !hmac.Equal([]byte(HashAPIKey(passphrase)), []byte(stored.PassphraseHash)) {
+		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid passphrase")
 		return "", false
 	}
 
@@ -176,62 +175,4 @@ func VerifyHMACSignature(secret, timestamp, method, path, body, signature string
 	mac.Write([]byte(BuildHMACMessage(timestamp, method, path, body)))
 	expected := hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(signature))
-}
-
-// --- Nonce replay protection ---
-
-// NonceTracker prevents replay of signed API key requests. It stores seen
-// nonces in memory and periodically cleans up expired entries.
-type NonceTracker struct {
-	mu   sync.Mutex
-	seen map[string]time.Time
-	done chan struct{}
-}
-
-// NewNonceTracker creates a NonceTracker and starts background cleanup.
-func NewNonceTracker() *NonceTracker {
-	nt := &NonceTracker{
-		seen: make(map[string]time.Time),
-		done: make(chan struct{}),
-	}
-	go nt.cleanup()
-	return nt
-}
-
-// Check returns true if the nonce has not been seen before, and records it.
-// Returns false for replayed nonces.
-func (nt *NonceTracker) Check(nonce string) bool {
-	nt.mu.Lock()
-	defer nt.mu.Unlock()
-	if _, exists := nt.seen[nonce]; exists {
-		return false
-	}
-	nt.seen[nonce] = time.Now()
-	return true
-}
-
-// Stop shuts down the background cleanup goroutine.
-func (nt *NonceTracker) Stop() {
-	close(nt.done)
-}
-
-// cleanup periodically removes nonces older than twice the drift window.
-func (nt *NonceTracker) cleanup() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-nt.done:
-			return
-		case <-ticker.C:
-			nt.mu.Lock()
-			cutoff := time.Now().Add(-2 * maxTimestampDrift)
-			for k, t := range nt.seen {
-				if t.Before(cutoff) {
-					delete(nt.seen, k)
-				}
-			}
-			nt.mu.Unlock()
-		}
-	}
 }

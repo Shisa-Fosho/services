@@ -40,6 +40,9 @@ func ValidateAPIKey(key *APIKey) error {
 	if key.HMACSecretEncrypted == "" {
 		return fmt.Errorf("encrypted HMAC secret is required: %w", ErrInvalidAPIKey)
 	}
+	if key.PassphraseHash == "" {
+		return fmt.Errorf("passphrase hash is required: %w", ErrInvalidAPIKey)
+	}
 	if key.ExpiresAt.IsZero() {
 		return fmt.Errorf("expiry is required: %w", ErrInvalidAPIKey)
 	}
