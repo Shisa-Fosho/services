@@ -253,10 +253,55 @@ Every service follows this structure in `cmd/<service>/main.go`:
 
 ## Polymarket Compatibility
 
-Our REST API aims for compatibility with Polymarket's CLOB client SDKs:
-- TypeScript: `Polymarket/clob-client`
-- Python: `Polymarket/py-clob-client`
-- Order signing: `Polymarket/clob-order-utils`
+Our REST API aims for compatibility with Polymarket's CLOB client SDKs. The
+upstream SDK source is the **authoritative spec** — not general knowledge,
+not prior implementations, not pattern-matching from similar systems.
+
+### Pinned reference versions
+
+| Repo | Pinned tag | Purpose |
+|------|-----------|---------|
+| `Polymarket/clob-client` | `v5.8.2` | TypeScript SDK — auth headers, request signing, REST client |
+| `Polymarket/py-clob-client` | `v0.34.6` | Python SDK — cross-reference for TS |
+| `Polymarket/clob-order-utils` | `main` | Order signing primitives (pin when stable) |
+
+Bump these versions intentionally when you decide to upgrade compatibility
+target. Do not drift — if planning work references a newer behavior, pin
+higher first.
+
+### SDK verification rule
+
+Before planning or implementing any Polymarket-compatible surface (auth
+headers, order signing, REST endpoints, response formats):
+
+1. **Fetch the source from the pinned tag.** Use `gh api` so the fetch is
+   reproducible and tied to a specific commit:
+   ```bash
+   # List directory:
+   gh api repos/Polymarket/clob-client/contents/src/headers?ref=v5.8.2 --jq '.[].name'
+
+   # Read a file:
+   gh api repos/Polymarket/clob-client/contents/src/headers/index.ts?ref=v5.8.2 \
+     --jq '.content' | base64 -d
+   ```
+2. **Extract the exact contract** — header names, field names, types, ordering,
+   signing payload format — and document it in the plan.
+3. **Derive tests from SDK behavior, not from the implementation.** Writing
+   both code and tests from your own mental model creates a closed loop
+   where the tests validate the wrong assumption. Tests must assert what
+   a real SDK client sends and expects, including the **absence** of fields
+   the SDK doesn't use.
+4. **Cross-reference both SDKs** when one is ambiguous. If `clob-client` (TS)
+   and `py-clob-client` (Python) disagree, flag it to the user rather than
+   picking one silently.
+
+### Why this matters (incident log)
+
+- **PR #48 (nonce tracker)**: first implementation added an in-memory nonce
+  tracker keyed on a `POLY_NONCE` header for HMAC-signed requests. The actual
+  clob-client L2 headers don't send `POLY_NONCE` — it's only used on L1
+  (EIP-712) headers. Caught in review by fetching the SDK source; the entire
+  nonce subsystem was removed. Rule exists to prevent recurrence.
 
 ## Contracts (Read-Only Reference)
 

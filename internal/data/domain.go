@@ -96,6 +96,7 @@ type APIKey struct {
 	KeyHash             string    `db:"key_hash"`              // SHA-256 of the raw API key, hex-encoded. PK.
 	UserAddress         string    `db:"user_address"`          // FK to users.address.
 	HMACSecretEncrypted string    `db:"hmac_secret_encrypted"` // AES-256-GCM ciphertext.
+	PassphraseHash      string    `db:"passphrase_hash"`       // SHA-256 of the passphrase, hex-encoded.
 	Label               string    `db:"label"`
 	ExpiresAt           time.Time `db:"expires_at"`
 	Revoked             bool      `db:"revoked"`

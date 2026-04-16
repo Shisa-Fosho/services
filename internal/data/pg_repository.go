@@ -203,17 +203,37 @@ func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 		return fmt.Errorf("upserting api key: %w", err)
 	}
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO api_keys (key_hash, user_address, hmac_secret_encrypted, label, expires_at)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO api_keys (key_hash, user_address, hmac_secret_encrypted, passphrase_hash, label, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (key_hash)
-		 DO UPDATE SET expires_at = $5, hmac_secret_encrypted = $3
+		 DO UPDATE SET expires_at = $6, hmac_secret_encrypted = $3, passphrase_hash = $4
 		 WHERE api_keys.user_address = $2`,
-		key.KeyHash, key.UserAddress, key.HMACSecretEncrypted, key.Label, key.ExpiresAt,
+		key.KeyHash, key.UserAddress, key.HMACSecretEncrypted, key.PassphraseHash, key.Label, key.ExpiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting api key for %s: %w", key.UserAddress, err)
 	}
 	return nil
+}
+
+// GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its hash.
+func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT * FROM api_keys
+		 WHERE key_hash = $1 AND revoked = false AND expires_at > now()`,
+		keyHash,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("getting api key by hash: %w", err)
+	}
+	key, err := pgx.CollectExactlyOneRow(rows, pgx.RowToAddrOfStructByName[APIKey])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("scanning api key by hash: %w", err)
+	}
+	return key, nil
 }
 
 // GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.

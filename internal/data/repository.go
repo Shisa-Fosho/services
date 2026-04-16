@@ -49,6 +49,10 @@ type Repository interface {
 	// Validates input via ValidateAPIKey before persisting.
 	UpsertAPIKey(ctx context.Context, key *APIKey) error
 
+	// GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its hash.
+	// Returns ErrNotFound if the key does not exist, is revoked, or is expired.
+	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
+
 	// GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.
 	GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error)
 
