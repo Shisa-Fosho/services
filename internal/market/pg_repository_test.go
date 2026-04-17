@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Shisa-Fosho/services/internal/platform/postgres"
+	"github.com/Shisa-Fosho/services/internal/shared/postgres"
 )
 
 func cleanTables(t *testing.T, pool *pgxpool.Pool) {

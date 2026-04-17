@@ -1,7 +1,7 @@
 package grpc
 
 import (
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"

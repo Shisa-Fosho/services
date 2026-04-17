@@ -84,7 +84,7 @@ Present a draft to the user with:
 ```
 
 **Label inference rules:**
-- `internal/platform/` → `component:shared-platform`
+- `internal/shared/` → `component:shared-platform`
 - `internal/trading/` or `cmd/trading/` → `component:trading-service`
 - `internal/market/` or `internal/data/` or `cmd/platform/` → `component:platform-service`
 - New feature → `type:feature`

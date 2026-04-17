@@ -1,6 +1,6 @@
-// Package platformnats provides NATS client utilities with JetStream support
+// Package sharednats provides NATS client utilities with JetStream support
 // and OpenTelemetry trace context propagation for all Shisa services.
-package platformnats
+package sharednats
 
 import (
 	"fmt"

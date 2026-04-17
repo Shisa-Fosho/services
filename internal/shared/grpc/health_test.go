@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	platformgrpc "github.com/Shisa-Fosho/services/internal/platform/grpc"
+	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -40,7 +40,7 @@ func TestWatchHealth_SetsServing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go platformgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Wait for at least one tick.
 	time.Sleep(50 * time.Millisecond)
@@ -63,7 +63,7 @@ func TestWatchHealth_TransitionsToNotServing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go platformgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Let it become healthy first.
 	time.Sleep(50 * time.Millisecond)
@@ -90,7 +90,7 @@ func TestWatchHealth_RecoversAfterFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go platformgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Wait for NOT_SERVING.
 	time.Sleep(50 * time.Millisecond)

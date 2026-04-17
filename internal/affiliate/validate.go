@@ -3,7 +3,7 @@ package affiliate
 import (
 	"fmt"
 
-	"github.com/Shisa-Fosho/services/internal/platform/eth"
+	"github.com/Shisa-Fosho/services/internal/shared/eth"
 )
 
 // ValidateReferral checks that a referral meets all creation rules.
