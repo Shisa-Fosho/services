@@ -1,4 +1,4 @@
-package session
+package auth
 
 import (
 	"context"
@@ -7,13 +7,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	"github.com/Shisa-Fosho/services/internal/shared/auth"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 )
 
@@ -109,19 +107,9 @@ func (r *fakeRepo) RevokeAllRefreshTokens(_ context.Context, userAddress string)
 	return nil
 }
 
-func testJWTConfig() auth.JWTConfig {
-	return auth.JWTConfig{
-		AccessSecret:  []byte("test-access-secret-that-is-32-bytes!!"),
-		RefreshSecret: []byte("test-refresh-secret-that-is-32-bytes!"),
-		AccessTTL:     15 * time.Minute,
-		RefreshTTL:    7 * 24 * time.Hour,
-		Issuer:        "shisa-test",
-	}
-}
-
 func testHandler(t *testing.T, repo *fakeRepo, verifier *fakeVerifier) *Handler {
 	t.Helper()
-	jwtMgr, err := auth.NewJWTManager(testJWTConfig())
+	jwtMgr, err := NewJWTManager(testJWTConfig())
 	if err != nil {
 		t.Fatalf("creating JWT manager: %v", err)
 	}
@@ -262,7 +250,7 @@ func TestRefresh_Success(t *testing.T) {
 
 	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	repo := newFakeRepo()
-	jwtMgr, _ := auth.NewJWTManager(testJWTConfig())
+	jwtMgr, _ := NewJWTManager(testJWTConfig())
 
 	tokenStr, jti, expiresAt, _ := jwtMgr.IssueRefreshToken(addr)
 	repo.refreshTokens[jti] = &data.RefreshToken{
@@ -293,7 +281,7 @@ func TestRefresh_RevokedToken(t *testing.T) {
 
 	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	repo := newFakeRepo()
-	jwtMgr, _ := auth.NewJWTManager(testJWTConfig())
+	jwtMgr, _ := NewJWTManager(testJWTConfig())
 
 	tokenStr, jti, expiresAt, _ := jwtMgr.IssueRefreshToken(addr)
 	repo.refreshTokens[jti] = &data.RefreshToken{
@@ -373,7 +361,7 @@ func TestSession_Valid(t *testing.T) {
 	h := testHandler(t, repo, verifier)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
-	r = r.WithContext(auth.WithUserAddress(r.Context(), addr))
+	r = r.WithContext(WithUserAddress(r.Context(), addr))
 	w := httptest.NewRecorder()
 
 	h.session(w, r)

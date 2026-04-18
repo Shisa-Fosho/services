@@ -11,6 +11,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/Shisa-Fosho/services/internal/shared/envutil"
 	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
 	"github.com/Shisa-Fosho/services/internal/shared/observability"
 	"github.com/Shisa-Fosho/services/internal/shared/postgres"
@@ -49,7 +50,7 @@ func run() error {
 	}()
 
 	// Metrics + health HTTP server.
-	metricsPort := getEnv("METRICS_PORT", "9094")
+	metricsPort := envutil.Get("METRICS_PORT", "9094")
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -101,11 +102,4 @@ func run() error {
 
 	logger.Info("shutdown complete")
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

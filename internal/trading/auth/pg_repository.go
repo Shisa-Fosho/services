@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	sharedauth "github.com/Shisa-Fosho/services/internal/shared/auth"
 )
 
 // PGRepository implements APIKeyRepository using PostgreSQL via pgx.
@@ -28,7 +27,7 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 // updates expires_at, hmac_secret_encrypted, and passphrase_hash —
 // enabling idempotent re-derivation when the client presents the same
 // EIP-712 signature inputs.
-func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *sharedauth.APIKey) error {
+func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 	if err := ValidateAPIKey(key); err != nil {
 		return fmt.Errorf("upserting api key: %w", err)
 	}
@@ -47,9 +46,9 @@ func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *sharedauth.APIKey)
 }
 
 // GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its
-// hash. Implements sharedauth.APIKeyReader so shared/auth middleware can use
-// this repository directly for L2 HMAC verification.
-func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*sharedauth.APIKey, error) {
+// hash. Implements APIKeyReader so the HMAC middleware (same package) can use
+// this repository directly for L2 verification.
+func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT * FROM api_keys
 		 WHERE key_hash = $1 AND revoked = false AND expires_at > now()`,
@@ -58,7 +57,7 @@ func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*sh
 	if err != nil {
 		return nil, fmt.Errorf("getting api key by hash: %w", err)
 	}
-	key, err := pgx.CollectExactlyOneRow(rows, pgx.RowToAddrOfStructByName[sharedauth.APIKey])
+	key, err := pgx.CollectExactlyOneRow(rows, pgx.RowToAddrOfStructByName[APIKey])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, data.ErrNotFound
@@ -70,7 +69,7 @@ func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*sh
 
 // GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user,
 // ordered by created_at descending (newest first).
-func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*sharedauth.APIKey, error) {
+func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT * FROM api_keys
 		 WHERE user_address = $1 AND revoked = false AND expires_at > now()
@@ -80,7 +79,7 @@ func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string)
 	if err != nil {
 		return nil, fmt.Errorf("listing api keys for %s: %w", userAddress, err)
 	}
-	keys, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[sharedauth.APIKey])
+	keys, err := pgx.CollectRows(rows, pgx.RowToAddrOfStructByName[APIKey])
 	if err != nil {
 		return nil, fmt.Errorf("scanning api keys for %s: %w", userAddress, err)
 	}

@@ -6,9 +6,9 @@ import "context"
 // session-auth state (users + refresh tokens) and the position read/write
 // primitives shared with downstream services.
 //
-// API-key storage has moved to trading/auth — see
+// API-key storage lives entirely in the trading service — see
 // internal/trading/auth.APIKeyRepository for derive/list/revoke and
-// internal/shared/auth.APIKeyReader for the narrow read interface used by
+// internal/trading/auth.APIKeyReader for the narrow read interface used by
 // the L2 HMAC middleware.
 //
 // Implementations must be safe for concurrent use.

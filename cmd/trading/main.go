@@ -13,7 +13,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 
-	"github.com/Shisa-Fosho/services/internal/shared/auth"
+	"github.com/Shisa-Fosho/services/internal/shared/envutil"
 	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
@@ -56,7 +56,7 @@ func run() error {
 	}()
 
 	// Metrics HTTP server.
-	metricsPort := getEnv("METRICS_PORT", "9091")
+	metricsPort := envutil.Get("METRICS_PORT", "9091")
 	metricsSrv := &http.Server{
 		Addr:              ":" + metricsPort,
 		Handler:           metrics.Handler(),
@@ -85,12 +85,12 @@ func run() error {
 
 	// API-key auth dependencies. Trading owns the Polymarket-compatible
 	// API-key lifecycle (derive, list, revoke) — see internal/trading/auth.
-	apiKeyCfg := auth.APIKeyConfig{
-		DerivationSecret: []byte(mustGetEnv("APIKEY_DERIVATION_SECRET")),
-		EncryptionKey:    []byte(mustGetEnv("APIKEY_ENCRYPTION_KEY")),
+	apiKeyCfg := tradingauth.APIKeyConfig{
+		DerivationSecret: []byte(envutil.MustGet("APIKEY_DERIVATION_SECRET")),
+		EncryptionKey:    []byte(envutil.MustGet("APIKEY_ENCRYPTION_KEY")),
 		ChainID:          137, // Polygon mainnet. Override via config for testnet/local.
 	}
-	if err := auth.ValidateAPIKeyConfig(apiKeyCfg); err != nil {
+	if err := tradingauth.ValidateAPIKeyConfig(apiKeyCfg); err != nil {
 		return fmt.Errorf("validating api key config: %w", err)
 	}
 	apiKeyRepo := tradingauth.NewPGRepository(pool)
@@ -105,7 +105,7 @@ func run() error {
 	tradingv1.RegisterTradingServiceServer(grpcSrv, &tradingServer{})
 
 	// HTTP API server.
-	httpPort := getEnv("HTTP_PORT", "8080")
+	httpPort := envutil.Get("HTTP_PORT", "8080")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -132,7 +132,7 @@ func run() error {
 	}()
 
 	// Start gRPC listener.
-	grpcPort := getEnv("GRPC_PORT", "9001")
+	grpcPort := envutil.Get("GRPC_PORT", "9001")
 	lis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
 		return fmt.Errorf("listening on grpc port %s: %w", grpcPort, err)
@@ -167,21 +167,6 @@ func run() error {
 
 	logger.Info("shutdown complete")
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func mustGetEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		panic(fmt.Sprintf("required environment variable %s is not set", key))
-	}
-	return v
 }
 
 // tradingServer implements the placeholder TradingService.

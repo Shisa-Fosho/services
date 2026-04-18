@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	sharedauth "github.com/Shisa-Fosho/services/internal/shared/auth"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 
@@ -24,11 +23,11 @@ type Handler struct {
 	logger    *zap.Logger
 	repo      APIKeyRepository
 	encKey    []byte
-	apiKeyCfg sharedauth.APIKeyConfig
+	apiKeyCfg APIKeyConfig
 }
 
 // NewHandler creates an API-key handler.
-func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg sharedauth.APIKeyConfig) *Handler {
+func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg APIKeyConfig) *Handler {
 	return &Handler{
 		logger:    logger,
 		repo:      repo,
@@ -47,9 +46,9 @@ func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg sharedauth.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/derive-api-key", h.deriveAPIKey)
 	mux.Handle("GET /auth/api-keys",
-		sharedauth.AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.listAPIKeys)))
+		AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.listAPIKeys)))
 	mux.Handle("DELETE /auth/api-key",
-		sharedauth.AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.revokeAPIKey)))
+		AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.revokeAPIKey)))
 }
 
 // deriveAPIKeyResponse is the wire shape expected by clob-client v5.8.2's
@@ -73,10 +72,10 @@ type deriveAPIKeyResponse struct {
 // in any middleware — anyone able to produce a valid EIP-712 sig for address X
 // is, by definition, the owner of X.
 func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
-	address := r.Header.Get(sharedauth.HeaderAddress)
-	signature := r.Header.Get(sharedauth.HeaderSignature)
-	timestamp := r.Header.Get(sharedauth.HeaderTimestamp)
-	nonce := r.Header.Get(sharedauth.HeaderNonce)
+	address := r.Header.Get(HeaderAddress)
+	signature := r.Header.Get(HeaderSignature)
+	timestamp := r.Header.Get(HeaderTimestamp)
+	nonce := r.Header.Get(HeaderNonce)
 
 	if address == "" || signature == "" || timestamp == "" {
 		httputil.ErrorResponse(w, http.StatusBadRequest, "POLY_ADDRESS, POLY_SIGNATURE, and POLY_TIMESTAMP headers are required")
@@ -86,27 +85,27 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 		nonce = "0" // SDK default: createL1Headers sends "0" when nonce is unset.
 	}
 
-	sigBytes, err := sharedauth.VerifyEIP712Signature(address, timestamp, nonce, sharedauth.ClobAuthMessage, signature, h.apiKeyCfg.ChainID)
+	sigBytes, err := VerifyEIP712Signature(address, timestamp, nonce, ClobAuthMessage, signature, h.apiKeyCfg.ChainID)
 	if err != nil {
 		h.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
 
-	apiKey, hmacSecret, passphrase := sharedauth.DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
-	keyHash := sharedauth.HashAPIKey(apiKey)
+	apiKey, hmacSecret, passphrase := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
+	keyHash := HashAPIKey(apiKey)
 
-	encryptedSecret, err := sharedauth.EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
+	encryptedSecret, err := EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
 	if err != nil {
 		h.internalError(w, "encrypting HMAC secret", err)
 		return
 	}
 
-	if err := h.repo.UpsertAPIKey(r.Context(), &sharedauth.APIKey{
+	if err := h.repo.UpsertAPIKey(r.Context(), &APIKey{
 		KeyHash:             keyHash,
 		UserAddress:         address,
 		HMACSecretEncrypted: encryptedSecret,
-		PassphraseHash:      sharedauth.HashAPIKey(passphrase),
+		PassphraseHash:      HashAPIKey(passphrase),
 		ExpiresAt:           time.Now().Add(apiKeyTTL),
 	}); err != nil {
 		h.internalError(w, "upserting api key", err)
@@ -136,8 +135,8 @@ func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	address := sharedauth.UserAddressFrom(r.Context())
-	keyHash := sharedauth.HashAPIKey(req.APIKey)
+	address := UserAddressFrom(r.Context())
+	keyHash := HashAPIKey(req.APIKey)
 
 	if err := h.repo.RevokeAPIKey(r.Context(), keyHash, address); err != nil {
 		if errors.Is(err, data.ErrNotFound) {
@@ -163,7 +162,7 @@ type apiKeyListItem struct {
 // listAPIKeys implements GET /auth/api-keys. Auth is L2 HMAC; user address is
 // extracted from context.
 func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request) {
-	address := sharedauth.UserAddressFrom(r.Context())
+	address := UserAddressFrom(r.Context())
 
 	keys, err := h.repo.GetAPIKeysByUser(r.Context(), address)
 	if err != nil {
