@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/Shisa-Fosho/services/internal/data"
+	"github.com/Shisa-Fosho/services/internal/platform/data"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 

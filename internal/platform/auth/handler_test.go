@@ -11,7 +11,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/Shisa-Fosho/services/internal/data"
+	"github.com/Shisa-Fosho/services/internal/platform/data"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 )
 

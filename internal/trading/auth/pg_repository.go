@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Shisa-Fosho/services/internal/data"
+	"github.com/Shisa-Fosho/services/internal/platform/data"
 )
 
 // PGRepository implements APIKeyRepository using PostgreSQL via pgx.

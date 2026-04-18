@@ -15,8 +15,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"github.com/Shisa-Fosho/services/internal/data"
 	platformauth "github.com/Shisa-Fosho/services/internal/platform/auth"
+	"github.com/Shisa-Fosho/services/internal/platform/data"
 	"github.com/Shisa-Fosho/services/internal/shared/envutil"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"

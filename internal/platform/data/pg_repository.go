@@ -195,4 +195,3 @@ func (r *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddress s
 	}
 	return nil
 }
-
