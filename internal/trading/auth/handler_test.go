@@ -18,7 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"go.uber.org/zap/zaptest"
 
-	"github.com/Shisa-Fosho/services/internal/data"
+	"github.com/Shisa-Fosho/services/internal/platform/data"
 )
 
 // fakeRepo is an in-memory APIKeyRepository implementation for tests.
