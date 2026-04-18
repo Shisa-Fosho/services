@@ -10,7 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/Shisa-Fosho/services/internal/platform/eth"
+	"github.com/Shisa-Fosho/services/internal/shared/eth"
 )
 
 // EIP-4361 field prefixes used during message parsing.

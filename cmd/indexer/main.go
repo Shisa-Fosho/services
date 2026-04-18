@@ -11,9 +11,9 @@ import (
 
 	"go.uber.org/zap"
 
-	platformnats "github.com/Shisa-Fosho/services/internal/platform/nats"
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
-	"github.com/Shisa-Fosho/services/internal/platform/postgres"
+	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/postgres"
 )
 
 const serviceName = "indexer"
@@ -76,7 +76,7 @@ func run() error {
 	defer pool.Close()
 
 	// NATS.
-	nc, err := platformnats.ClientFromEnv(logger, serviceName)
+	nc, err := sharednats.ClientFromEnv(logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("connecting to nats: %w", err)
 	}

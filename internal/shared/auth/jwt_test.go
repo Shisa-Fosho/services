@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Shisa-Fosho/services/internal/platform/eth"
+	"github.com/Shisa-Fosho/services/internal/shared/eth"
 )
 
 func testJWTConfig() JWTConfig {

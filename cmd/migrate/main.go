@@ -6,17 +6,23 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Shisa-Fosho/services/internal/platform/postgres"
+	"github.com/Shisa-Fosho/services/internal/shared/postgres"
 )
 
 const usage = "usage: migrate <up|down>"
 
 // migrationDirs lists migration directories in execution order.
-// shared runs first (extensions, common schemas), then service-specific.
+//
+//	shared   — extensions + common schema (runs first)
+//	platform — users, refresh_tokens, markets, positions, etc.
+//	trading  — orders, trades, balances, api_keys (references users in platform)
+//
+// trading runs last because its api_keys migration has an FK to users in
+// platform — platform must therefore have created users first.
 var migrationDirs = []string{
 	"migrations/shared",
-	"migrations/trading",
 	"migrations/platform",
+	"migrations/trading",
 }
 
 func main() {

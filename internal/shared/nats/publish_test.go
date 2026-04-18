@@ -1,4 +1,4 @@
-package platformnats
+package sharednats
 
 import (
 	"context"

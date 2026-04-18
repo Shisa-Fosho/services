@@ -16,7 +16,7 @@
 - Standard Go project layout
 - Internal packages for non-exported code
 - Domain logic in `internal/<service>/`
-- Shared infrastructure in `internal/platform/`
+- Shared infrastructure in `internal/shared/`
 
 ### Naming
 - MixedCaps/camelCase (never underscores in Go identifiers)
@@ -87,7 +87,7 @@ Standard fields: `request_id`, `user_address`, `order_id`, `market_id`, `tx_id`,
 - `t.Parallel()` for independent unit tests; **avoid `t.Parallel()` in integration tests** that share a database — parallel truncation causes test pollution
 - Integration tests: `//go:build integration` (requires running stack)
 - Integration test runs across packages must use `-p 1` because packages share one physical database
-- Shared test helper: `postgres.TestPool(t)` from `internal/platform/postgres/testutil.go`
+- Shared test helper: `postgres.TestPool(t)` from `internal/shared/postgres/testutil.go`
 - TDD: write tests first, `go build` to verify compilation, `go test` once implementation exists
 - Test naming: `TestFunctionName_Scenario` (e.g., `TestMatchOrders_InsufficientBalance`)
 - **Handler tests required** — every HTTP handler must have handler-level tests using `httptest.NewRecorder` + real mux routing. At minimum: one happy-path and one error-path test per endpoint. Auth-required endpoints must also test missing/invalid JWT.

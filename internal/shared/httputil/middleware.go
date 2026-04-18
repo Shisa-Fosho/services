@@ -7,7 +7,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
 )
 
 // RequestID is HTTP middleware that extracts or generates a unique request ID.

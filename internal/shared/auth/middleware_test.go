@@ -1,9 +1,10 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -16,7 +17,7 @@ import (
 	"github.com/Shisa-Fosho/services/internal/data"
 )
 
-// --- Existing Authenticate (JWT-only) tests ---
+// --- Authenticate (JWT-only) tests ---
 
 func TestAuthenticate_ValidToken(t *testing.T) {
 	t.Parallel()
@@ -104,15 +105,34 @@ func TestAuthenticate_ExpiredToken(t *testing.T) {
 	}
 }
 
-// --- Combined AuthMiddleware tests ---
+// --- AuthenticateAPIKey (HMAC-only) tests ---
 
-// signRequest is a test helper that signs an HTTP request with HMAC-SHA256.
-func signRequest(r *http.Request, apiKey, hmacSecret, passphrase, body string) {
+// fakeAPIKeyReader is an in-memory APIKeyReader for tests.
+type fakeAPIKeyReader struct {
+	keys map[string]*APIKey
+}
+
+func (f *fakeAPIKeyReader) GetAPIKeyByHash(_ context.Context, keyHash string) (*APIKey, error) {
+	k, ok := f.keys[keyHash]
+	if !ok || k.Revoked || k.ExpiresAt.Before(time.Now()) {
+		return nil, data.ErrNotFound
+	}
+	return k, nil
+}
+
+// signRequest signs an HTTP request with HMAC-SHA256 using the clob-client v5.8.2
+// contract: URL-safe base64 output over `timestamp + method + path + body`, with
+// the wire-format secret (URL-safe base64) decoded to raw bytes as the HMAC key.
+func signRequest(r *http.Request, apiKey, hmacSecretB64, passphrase, body string) {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	msg := BuildHMACMessage(ts, r.Method, r.URL.Path, body)
-	mac := hmac.New(sha256.New, []byte(hmacSecret))
+	secretBytes, err := base64.URLEncoding.DecodeString(hmacSecretB64)
+	if err != nil {
+		panic("signRequest: secret must be URL-safe base64: " + err.Error())
+	}
+	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(msg))
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
 	r.Header.Set(HeaderAPIKey, apiKey)
 	r.Header.Set(HeaderTimestamp, ts)
@@ -120,22 +140,23 @@ func signRequest(r *http.Request, apiKey, hmacSecret, passphrase, body string) {
 	r.Header.Set(HeaderPassphrase, passphrase)
 }
 
-// testAPIKeySetup creates a stored API key and returns (rawKey, hmacSecret, passphrase, encryptionKey).
-func testAPIKeySetup(t *testing.T, repo *fakeRepo, address string) (string, string, string, []byte) {
+// testAPIKeySetup stores a valid APIKey in the reader and returns
+// (rawKey, hmacSecretB64, passphrase, encryptionKey).
+func testAPIKeySetup(t *testing.T, reader *fakeAPIKeyReader, address string) (string, string, string, []byte) {
 	t.Helper()
 	encKey := []byte("test-encryption-key-32-bytes!!!!") // exactly 32 bytes
 
 	rawKey := "test-api-key-hex-0123456789abcd"
-	hmacSecret := "test-hmac-secret"
+	hmacSecretB64 := base64.URLEncoding.EncodeToString([]byte("test-hmac-secret-exactly-32bytes"))
 	passphrase := "test-passphrase-0123456789abcdef"
 	keyHash := HashAPIKey(rawKey)
 
-	encrypted, err := EncryptSecret(encKey, hmacSecret)
+	encrypted, err := EncryptSecret(encKey, hmacSecretB64)
 	if err != nil {
 		t.Fatalf("encrypting secret: %v", err)
 	}
 
-	repo.apiKeys[keyHash] = &data.APIKey{
+	reader.keys[keyHash] = &APIKey{
 		KeyHash:             keyHash,
 		UserAddress:         address,
 		HMACSecretEncrypted: encrypted,
@@ -143,32 +164,26 @@ func testAPIKeySetup(t *testing.T, repo *fakeRepo, address string) (string, stri
 		ExpiresAt:           time.Now().Add(24 * time.Hour),
 	}
 
-	return rawKey, hmacSecret, passphrase, encKey
+	return rawKey, hmacSecretB64, passphrase, encKey
 }
 
-// newAuthMiddlewareHandler creates a test handler wrapped with AuthMiddleware.
-func newAuthMiddlewareHandler(t *testing.T, repo *fakeRepo, encKey []byte) (http.Handler, *JWTManager) {
+// newAPIKeyTestHandler wraps an echo handler with AuthenticateAPIKey.
+func newAPIKeyTestHandler(t *testing.T, reader APIKeyReader, encKey []byte) http.Handler {
 	t.Helper()
-	jwtMgr, err := NewJWTManager(testJWTConfig())
-	if err != nil {
-		t.Fatalf("creating JWT manager: %v", err)
-	}
 	logger := zaptest.NewLogger(t)
-
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(UserAddressFrom(r.Context())))
 	})
-	handler := Middleware(jwtMgr, repo, encKey, logger)(inner)
-	return handler, jwtMgr
+	return AuthenticateAPIKey(reader, encKey, logger)(inner)
 }
 
-func TestAuthMiddleware_ValidAPIKey(t *testing.T) {
+func TestAuthenticateAPIKey_ValidRequest(t *testing.T) {
 	t.Parallel()
 	addr := "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, passphrase, encKey := testAPIKeySetup(t, repo, addr)
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, hmacSecret, passphrase, encKey := testAPIKeySetup(t, reader, addr)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
 	body := `{"order":"buy"}`
 	r := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
@@ -178,67 +193,47 @@ func TestAuthMiddleware_ValidAPIKey(t *testing.T) {
 	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
 	}
 	if got := w.Body.String(); got != addr {
 		t.Errorf("address = %q, want %q", got, addr)
 	}
 }
 
-func TestAuthMiddleware_ValidJWT(t *testing.T) {
+// TestAuthenticateAPIKey_RejectsJWT enforces the architectural rule that a
+// CLOB-protected endpoint rejects JWT Bearer tokens even if they're otherwise
+// valid. This is the contract-change check that prevents accidental
+// reintroduction of a combined "accept either" middleware.
+func TestAuthenticateAPIKey_RejectsJWT(t *testing.T) {
 	t.Parallel()
-	addr := "0xcccccccccccccccccccccccccccccccccccccccc"
 	encKey := []byte("test-encryption-key-32-bytes!!!!")
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	handler, jwtMgr := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
-	token, _ := jwtMgr.IssueAccessToken(addr)
+	// Mint a perfectly valid JWT. The point is that AuthenticateAPIKey must
+	// NOT fall back to JWT validation on a CLOB-protected route.
+	jwtMgr, _ := NewJWTManager(testJWTConfig())
+	token, _ := jwtMgr.IssueAccessToken("0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd")
+
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, r)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d; CLOB middleware must not accept JWT Bearer", w.Code, http.StatusUnauthorized)
 	}
-	if got := w.Body.String(); got != addr {
-		t.Errorf("address = %q, want %q", got, addr)
+	if !strings.Contains(w.Body.String(), "POLY_API_KEY") {
+		t.Errorf("body = %q, want message that mentions POLY_API_KEY so clients know which auth this endpoint expects", w.Body.String())
 	}
 }
 
-func TestAuthMiddleware_APIKeyTakesPrecedence(t *testing.T) {
-	t.Parallel()
-	apiKeyAddr := "0xcccccccccccccccccccccccccccccccccccccccc"
-	jwtAddr := "0xdddddddddddddddddddddddddddddddddddddd"
-
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, passphrase, encKey := testAPIKeySetup(t, repo, apiKeyAddr)
-	handler, jwtMgr := newAuthMiddlewareHandler(t, repo, encKey)
-	token, _ := jwtMgr.IssueAccessToken(jwtAddr)
-	body := `{"order":"buy"}`
-	r := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer "+token)
-	signRequest(r, rawKey, hmacSecret, passphrase, body)
-
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-	if got := w.Body.String(); got != apiKeyAddr {
-		t.Errorf("address = %q, want %q", got, apiKeyAddr)
-	}
-
-}
-
-func TestAuthMiddleware_MissingCredentials(t *testing.T) {
+func TestAuthenticateAPIKey_MissingAPIKeyHeader(t *testing.T) {
 	t.Parallel()
 	encKey := []byte("test-encryption-key-32-bytes!!!!")
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	w := httptest.NewRecorder()
@@ -248,25 +243,25 @@ func TestAuthMiddleware_MissingCredentials(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(w.Body.String(), "missing credentials") {
-		t.Errorf("body = %q, want 'missing credentials'", w.Body.String())
+	if !strings.Contains(w.Body.String(), "POLY_API_KEY") {
+		t.Errorf("body = %q, want mention of POLY_API_KEY", w.Body.String())
 	}
 }
 
-func TestAuthMiddleware_TimestampDrift(t *testing.T) {
+func TestAuthenticateAPIKey_TimestampDrift(t *testing.T) {
 	t.Parallel()
 	addr := "0xdddddddddddddddddddddddddddddddddddddd"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, _, encKey := testAPIKeySetup(t, repo, addr)
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, hmacSecretB64, _, encKey := testAPIKeySetup(t, reader, addr)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
-	// Use a timestamp 10 seconds in the past.
 	staleTS := strconv.FormatInt(time.Now().Add(-10*time.Second).Unix(), 10)
 	body := ""
 	msg := BuildHMACMessage(staleTS, http.MethodGet, "/orders", body)
-	mac := hmac.New(sha256.New, []byte(hmacSecret))
+	secretBytes, _ := base64.URLEncoding.DecodeString(hmacSecretB64)
+	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(msg))
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	r.Header.Set(HeaderAPIKey, rawKey)
@@ -284,12 +279,12 @@ func TestAuthMiddleware_TimestampDrift(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_InvalidHMAC(t *testing.T) {
+func TestAuthenticateAPIKey_InvalidHMAC(t *testing.T) {
 	t.Parallel()
 	addr := "0xffffffffffffffffffffffffffffffffffffffff"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, _, passphrase, encKey := testAPIKeySetup(t, repo, addr)
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, _, passphrase, encKey := testAPIKeySetup(t, reader, addr)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	r.Header.Set(HeaderAPIKey, rawKey)
@@ -308,17 +303,16 @@ func TestAuthMiddleware_InvalidHMAC(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_RevokedKey(t *testing.T) {
+func TestAuthenticateAPIKey_RevokedKey(t *testing.T) {
 	t.Parallel()
 	addr := "0x1111111111111111111111111111111111111111"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, passphrase, encKey := testAPIKeySetup(t, repo, addr)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, hmacSecret, passphrase, encKey := testAPIKeySetup(t, reader, addr)
 
-	// Revoke the key.
 	keyHash := HashAPIKey(rawKey)
-	repo.apiKeys[keyHash].Revoked = true
+	reader.keys[keyHash].Revoked = true
 
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
 	body := ""
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
@@ -335,20 +329,20 @@ func TestAuthMiddleware_RevokedKey(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_MissingPassphrase(t *testing.T) {
+func TestAuthenticateAPIKey_MissingPassphrase(t *testing.T) {
 	t.Parallel()
 	addr := "0x2222222222222222222222222222222222222222"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, _, encKey := testAPIKeySetup(t, repo, addr)
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, hmacSecretB64, _, encKey := testAPIKeySetup(t, reader, addr)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
-	// Sign the request but omit the passphrase header.
 	body := ""
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	msg := BuildHMACMessage(ts, http.MethodGet, "/orders", body)
-	mac := hmac.New(sha256.New, []byte(hmacSecret))
+	secretBytes, _ := base64.URLEncoding.DecodeString(hmacSecretB64)
+	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(msg))
-	sig := hex.EncodeToString(mac.Sum(nil))
+	sig := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
 	r.Header.Set(HeaderAPIKey, rawKey)
@@ -366,12 +360,12 @@ func TestAuthMiddleware_MissingPassphrase(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_WrongPassphrase(t *testing.T) {
+func TestAuthenticateAPIKey_WrongPassphrase(t *testing.T) {
 	t.Parallel()
 	addr := "0x3333333333333333333333333333333333333333"
-	repo := &fakeRepo{apiKeys: make(map[string]*data.APIKey)}
-	rawKey, hmacSecret, _, encKey := testAPIKeySetup(t, repo, addr)
-	handler, _ := newAuthMiddlewareHandler(t, repo, encKey)
+	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
+	rawKey, hmacSecret, _, encKey := testAPIKeySetup(t, reader, addr)
+	handler := newAPIKeyTestHandler(t, reader, encKey)
 
 	body := ""
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)

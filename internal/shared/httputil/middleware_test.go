@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap/zaptest"
 
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
 )
 
 func TestRequestID_GeneratesWhenMissing(t *testing.T) {

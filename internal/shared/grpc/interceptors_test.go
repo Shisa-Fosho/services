@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	platformgrpc "github.com/Shisa-Fosho/services/internal/platform/grpc"
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
+	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
@@ -60,7 +60,7 @@ func TestRecoveryInterceptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			interceptor := platformgrpc.RecoveryInterceptor(logger)
+			interceptor := sharedgrpc.RecoveryInterceptor(logger)
 			resp, err := interceptor(context.Background(), nil, fakeInfo("/test.Service/Method"), tt.handler)
 
 			if tt.wantResp && resp == nil {
@@ -109,7 +109,7 @@ func TestLoggingInterceptor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			interceptor := platformgrpc.LoggingInterceptor(zap.NewNop())
+			interceptor := sharedgrpc.LoggingInterceptor(zap.NewNop())
 			resp, err := interceptor(context.Background(), nil, fakeInfo("/test.Service/Method"), tt.handler)
 
 			gotCode := status.Code(err)
@@ -156,7 +156,7 @@ func TestMetricsInterceptor(t *testing.T) {
 			t.Parallel()
 
 			metrics := observability.NewTestMetrics()
-			interceptor := platformgrpc.MetricsInterceptor(metrics)
+			interceptor := sharedgrpc.MetricsInterceptor(metrics)
 
 			_, _ = interceptor(context.Background(), nil, fakeInfo("/test.Service/Method"), tt.handler)
 

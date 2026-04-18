@@ -1,4 +1,10 @@
-package auth
+// Package session implements the platform service's session-auth HTTP endpoints:
+// SIWE signup/login, JWT refresh, logout, and session info.
+//
+// API-key lifecycle (derive, list, revoke) lives in the trading service at
+// internal/trading/auth. This split matches Polymarket's architectural
+// division: gamma-api handles session, clob handles API keys.
+package session
 
 import (
 	"errors"
@@ -10,47 +16,43 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	"github.com/Shisa-Fosho/services/internal/platform/eth"
-	"github.com/Shisa-Fosho/services/internal/platform/httputil"
+	"github.com/Shisa-Fosho/services/internal/shared/auth"
+	"github.com/Shisa-Fosho/services/internal/shared/eth"
+	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 
 const refreshCookieName = "refresh_token"
 
-// Handler implements the auth REST endpoints.
+// Handler implements the platform service's session-auth REST endpoints.
 type Handler struct {
-	logger    *zap.Logger
-	repo      data.Repository
-	jwt       *JWTManager
-	siwe      MessageVerifier
-	safeCfg   eth.SafeConfig
-	secure    bool // Set Secure flag on cookies (true for non-localhost).
-	apiKeyCfg APIKeyConfig
+	logger  *zap.Logger
+	repo    data.SessionRepository
+	jwt     *auth.JWTManager
+	siwe    auth.MessageVerifier
+	safeCfg eth.SafeConfig
+	secure  bool // Set Secure flag on cookies (true for non-localhost).
 }
 
-// NewHandler creates a new auth handler with all dependencies.
-func NewHandler(logger *zap.Logger, repo data.Repository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool, apiKeyCfg APIKeyConfig) *Handler {
+// NewHandler creates a new session handler.
+func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *auth.JWTManager, siwe auth.MessageVerifier, safeCfg eth.SafeConfig, secure bool) *Handler {
 	return &Handler{
-		logger:    logger,
-		repo:      repo,
-		jwt:       jwt,
-		siwe:      siwe,
-		safeCfg:   safeCfg,
-		secure:    secure,
-		apiKeyCfg: apiKeyCfg,
+		logger:  logger,
+		repo:    repo,
+		jwt:     jwt,
+		siwe:    siwe,
+		safeCfg: safeCfg,
+		secure:  secure,
 	}
 }
 
-// RegisterRoutes registers auth routes on the given mux.
+// RegisterRoutes registers session-auth routes on the mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/nonce", h.nonce)
 	mux.HandleFunc("POST /auth/signup/wallet", h.signupWallet)
 	mux.HandleFunc("POST /auth/login/wallet", h.loginWallet)
 	mux.HandleFunc("POST /auth/refresh", h.refresh)
 	mux.HandleFunc("POST /auth/logout", h.logout)
-	mux.Handle("GET /auth/session", Authenticate(h.jwt)(http.HandlerFunc(h.session)))
-	mux.Handle("POST /auth/derive-api-key", Authenticate(h.jwt)(http.HandlerFunc(h.deriveAPIKey)))
-	mux.Handle("DELETE /auth/api-key", Authenticate(h.jwt)(http.HandlerFunc(h.revokeAPIKey)))
-	mux.Handle("GET /auth/api-keys", Authenticate(h.jwt)(http.HandlerFunc(h.listAPIKeys)))
+	mux.Handle("GET /auth/session", auth.Authenticate(h.jwt)(http.HandlerFunc(h.session)))
 }
 
 type nonceResponse struct {
@@ -58,7 +60,7 @@ type nonceResponse struct {
 }
 
 func (h *Handler) nonce(w http.ResponseWriter, _ *http.Request) {
-	_ = httputil.EncodeJSON(w, http.StatusOK, nonceResponse{Nonce: GenerateNonce()})
+	_ = httputil.EncodeJSON(w, http.StatusOK, nonceResponse{Nonce: auth.GenerateNonce()})
 }
 
 type walletSignupRequest struct {
@@ -84,7 +86,6 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify SIWE signature.
 	address, err := h.siwe.Verify(req.Message, req.Signature)
 	if err != nil {
 		h.logger.Info("SIWE verification failed", zap.Error(err))
@@ -92,10 +93,8 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Derive Safe address.
 	safeAddr := eth.DeriveSafeAddress(h.safeCfg, common.HexToAddress(address))
 
-	// Create user.
 	user := &data.User{
 		Address:      address,
 		Username:     req.Username,
@@ -167,7 +166,6 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check token in database.
 	stored, err := h.repo.GetRefreshToken(r.Context(), claims.ID)
 	if err != nil {
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid refresh token")
@@ -178,13 +176,11 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Revoke the old token (rotation).
 	if err := h.repo.RevokeRefreshToken(r.Context(), claims.ID); err != nil {
 		h.internalError(w, "revoking old refresh token", err)
 		return
 	}
 
-	// Issue new tokens.
 	accessToken, err := h.jwt.IssueAccessToken(claims.Subject)
 	if err != nil {
 		h.internalError(w, "issuing access token", err)
@@ -221,7 +217,6 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Clear cookie regardless.
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    "",
@@ -241,7 +236,7 @@ type sessionResponse struct {
 }
 
 func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
-	address := UserAddressFrom(r.Context())
+	address := auth.UserAddressFrom(r.Context())
 	user, err := h.repo.GetUserByAddress(r.Context(), address)
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) {
@@ -257,134 +252,6 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 		Username:    user.Username,
 		SafeAddress: user.SafeAddress,
 	})
-}
-
-// API key types and handlers.
-
-const apiKeyTTL = 30 * 24 * time.Hour // 30 days.
-
-type deriveAPIKeyRequest struct {
-	Signature string `json:"signature"`
-	Timestamp string `json:"timestamp"`
-	Nonce     string `json:"nonce"`
-}
-
-type deriveAPIKeyResponse struct {
-	APIKey     string    `json:"api_key"`
-	HMACSecret string    `json:"hmac_secret"`
-	Passphrase string    `json:"passphrase"`
-	ExpiresAt  time.Time `json:"expires_at"`
-}
-
-func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
-	var req deriveAPIKeyRequest
-	if err := httputil.DecodeJSON(r, &req); err != nil {
-		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.Signature == "" || req.Timestamp == "" {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "signature and timestamp are required")
-		return
-	}
-	if req.Nonce == "" {
-		req.Nonce = "0"
-	}
-
-	address := UserAddressFrom(r.Context())
-
-	sigBytes, err := VerifyEIP712Signature(address, req.Timestamp, req.Nonce, ClobAuthMessage, req.Signature, h.apiKeyCfg.ChainID)
-	if err != nil {
-		h.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
-		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
-		return
-	}
-
-	apiKey, hmacSecret, passphrase := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
-	keyHash := HashAPIKey(apiKey)
-
-	encryptedSecret, err := EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
-	if err != nil {
-		h.internalError(w, "encrypting HMAC secret", err)
-		return
-	}
-
-	expiresAt := time.Now().Add(apiKeyTTL)
-	if err := h.repo.UpsertAPIKey(r.Context(), &data.APIKey{
-		KeyHash:             keyHash,
-		UserAddress:         address,
-		HMACSecretEncrypted: encryptedSecret,
-		PassphraseHash:      HashAPIKey(passphrase),
-		ExpiresAt:           expiresAt,
-	}); err != nil {
-		h.internalError(w, "upserting api key", err)
-		return
-	}
-
-	_ = httputil.EncodeJSON(w, http.StatusOK, deriveAPIKeyResponse{
-		APIKey:     apiKey,
-		HMACSecret: hmacSecret,
-		Passphrase: passphrase,
-		ExpiresAt:  expiresAt,
-	})
-}
-
-type revokeAPIKeyRequest struct {
-	APIKey string `json:"api_key"`
-}
-
-func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
-	var req revokeAPIKeyRequest
-	if err := httputil.DecodeJSON(r, &req); err != nil {
-		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.APIKey == "" {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "api_key is required")
-		return
-	}
-
-	address := UserAddressFrom(r.Context())
-	keyHash := HashAPIKey(req.APIKey)
-
-	if err := h.repo.RevokeAPIKey(r.Context(), keyHash, address); err != nil {
-		if errors.Is(err, data.ErrNotFound) {
-			httputil.ErrorResponse(w, http.StatusNotFound, "api key not found")
-			return
-		}
-		h.internalError(w, "revoking api key", err)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-type apiKeyListItem struct {
-	KeyHash   string    `json:"key_hash"`
-	Label     string    `json:"label"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request) {
-	address := UserAddressFrom(r.Context())
-
-	keys, err := h.repo.GetAPIKeysByUser(r.Context(), address)
-	if err != nil {
-		h.internalError(w, "listing api keys", err)
-		return
-	}
-
-	items := make([]apiKeyListItem, len(keys))
-	for i, k := range keys {
-		items[i] = apiKeyListItem{
-			KeyHash:   k.KeyHash,
-			Label:     k.Label,
-			ExpiresAt: k.ExpiresAt,
-			CreatedAt: k.CreatedAt,
-		}
-	}
-
-	_ = httputil.EncodeJSON(w, http.StatusOK, items)
 }
 
 // issueSession creates access + refresh tokens, stores the refresh token,

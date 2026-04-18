@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"testing"
 
@@ -64,13 +65,31 @@ func TestDeriveAPIKey_KeyLength(t *testing.T) {
 	if len(key) != 32 {
 		t.Errorf("api key length = %d, want 32", len(key))
 	}
-	// HMAC secret: 32 bytes hex-encoded = 64 chars.
-	if len(secret) != 64 {
-		t.Errorf("hmac secret length = %d, want 64", len(secret))
+	// HMAC secret: 32 bytes base64url-encoded with '=' padding = 44 chars.
+	// Matches Polymarket clob-client v5.8.2 ApiKeyRaw.secret shape.
+	if len(secret) != 44 {
+		t.Errorf("hmac secret length = %d, want 44", len(secret))
 	}
 	// Passphrase: 16 bytes hex-encoded = 32 chars.
 	if len(passphrase) != 32 {
 		t.Errorf("passphrase length = %d, want 32", len(passphrase))
+	}
+}
+
+func TestDeriveAPIKey_SecretIsBase64URL(t *testing.T) {
+	t.Parallel()
+
+	sig := make([]byte, 65)
+	_, secret, _ := DeriveAPIKey(testDerivationSecret, sig)
+
+	// SDK contract: client base64url-decodes the secret into raw bytes
+	// (base64.urlsafe_b64decode / base64ToArrayBuffer). Must decode cleanly.
+	decoded, err := base64.URLEncoding.DecodeString(secret)
+	if err != nil {
+		t.Fatalf("secret must be URL-safe base64 with '=' padding, decode failed: %v", err)
+	}
+	if len(decoded) != 32 {
+		t.Errorf("decoded secret length = %d, want 32 (sha256 output)", len(decoded))
 	}
 }
 
@@ -80,15 +99,14 @@ func TestDeriveAPIKey_KeyAndSecretDiffer(t *testing.T) {
 	sig := make([]byte, 65)
 	key, secret, passphrase := DeriveAPIKey(testDerivationSecret, sig)
 
-	// The three credentials must be distinct.
-	if secret[:32] == key {
-		t.Error("api key should not equal the first half of hmac secret")
+	if secret == key {
+		t.Error("api key should not equal hmac secret")
 	}
 	if passphrase == key {
 		t.Error("passphrase should not equal api key")
 	}
-	if passphrase == secret[:32] {
-		t.Error("passphrase should not equal first half of hmac secret")
+	if passphrase == secret {
+		t.Error("passphrase should not equal hmac secret")
 	}
 }
 
@@ -102,7 +120,6 @@ func TestHashAPIKey_Consistency(t *testing.T) {
 		t.Errorf("hashes differ: %q vs %q", h1, h2)
 	}
 
-	// SHA-256 hex = 64 chars.
 	if len(h1) != 64 {
 		t.Errorf("hash length = %d, want 64", len(h1))
 	}

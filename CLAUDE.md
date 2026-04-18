@@ -18,8 +18,14 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
          │  Reverse Proxy │
          └───┬────────┬───┘
              │        │
-  /orders,   │        │ /auth, /admin,
-  /book, /ws │        │ /markets, /data
+  /orders,   │        │ /auth/nonce,
+  /book,     │        │ /auth/signup,
+  /ws,       │        │ /auth/login,
+  /auth/     │        │ /auth/refresh,
+  derive-    │        │ /auth/logout,
+  api-key,   │        │ /auth/session,
+  /auth/     │        │ /admin, /markets,
+  api-key(s) │        │ /data
              ▼        ▼
 ┌─────────────────┐  ┌─────────────────┐
 │ Trading Service │  │ Platform Service│
@@ -27,12 +33,14 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 │ :9001 (gRPC)    │  │ :9002 (gRPC)    │
 │ (metrics :9091) │  │ (metrics :9092) │
 │                 │  │                 │
-│ • CLOB Engine   │  │ • Auth (SIWE,   │
-│ • REST API      │  │   JWT, signup)  │
-│ • WebSocket     │  │ • Market API    │
-│                 │  │ • Data API      │
-│                 │  │ • Admin API     │
-│                 │  │ • Affiliate     │
+│ • CLOB Engine   │  │ • Session auth  │
+│ • REST API      │  │   (SIWE, JWT,   │
+│ • WebSocket     │  │   signup/login) │
+│ • API-key       │  │ • Market API    │
+│   lifecycle     │  │ • Data API      │
+│   (L1 derive,   │  │ • Admin API     │
+│   L2 list/      │  │ • Affiliate     │
+│   revoke)       │  │                 │
 └────────┬────────┘  └────────┬────────┘
          │ gRPC               │
          │    ┌───────────────┘
@@ -64,8 +72,8 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 | Service | Responsibility | HTTP Port | gRPC Port | Metrics Port |
 |---------|---------------|-----------|-----------|--------------|
 | Nginx | Reverse proxy, route to upstream services | 8000 | — | — |
-| Trading | CLOB engine, REST API, WebSocket | 8080 | 9001 | 9091 |
-| Platform | Auth, Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
+| Trading | CLOB engine, REST API, WebSocket, Polymarket-compatible API-key lifecycle (derive/list/revoke) | 8080 | 9001 | 9091 |
+| Platform | Session auth (SIWE/JWT/signup/login/refresh), Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
 | Settlement Worker | On-chain trade settlement, relayer | — | 9003 | 9093 |
 | Indexer | On-chain event monitoring, deposits | — | 9004 | 9094 |
 
@@ -106,17 +114,19 @@ cmd/                        # Service entry points (main.go per service)
   ├── resolution/           # Resolution worker (deferred — scaffold only)
   └── migrate/              # Migration CLI tool (up/down/status)
 internal/
-  ├── platform/             # Shared infrastructure packages
+  ├── shared/               # Cross-service infrastructure — imported by ALL services
   │   ├── observability/    # Logger, metrics, tracing, context utilities
   │   ├── grpc/             # gRPC server/client helpers, interceptors
   │   ├── nats/             # NATS client, JetStream helpers, instrumentation
   │   ├── postgres/         # Connection pooling, migration helpers
-  │   ├── auth/             # JWT, SIWE verification, auth middleware
+  │   ├── auth/             # JWT, SIWE, EIP-712 verify, HMAC, middleware, APIKey type
   │   ├── httputil/         # JSON helpers, HTTP middleware (RequestID, Logging, Recovery)
   │   └── eth/              # Ethereum utilities (address validation, Safe address derivation)
+  ├── session/              # Platform service — session-auth handler (signup/login/refresh/logout/session)
   ├── trading/              # Trading service domain (Order, Trade, Book, Balance)
+  │   └── auth/             #   └─ API-key lifecycle (derive/list/revoke) + APIKeyRepository
   ├── market/               # Platform service — market domain
-  ├── data/                 # Platform service — user data domain
+  ├── data/                 # Platform service — SessionRepository (users, refresh tokens, positions)
   ├── admin/                # Platform service — admin domain
   ├── affiliate/            # Platform service — referral system
   ├── settlement/           # Settlement worker domain
@@ -126,10 +136,10 @@ proto/                      # Protobuf definitions
   ├── trading/v1/
   ├── platform/v1/
   └── buf.yaml
-migrations/                 # SQL migrations per service
-  ├── trading/
-  ├── platform/
-  └── shared/
+migrations/                 # SQL migrations per service, run in order shared → platform → trading
+  ├── shared/               # Extensions + common schema (runs first)
+  ├── platform/             # users, refresh_tokens, markets, positions, etc.
+  └── trading/              # orders, trades, balances, api_keys (FK to users in platform)
 deploy/                     # Infrastructure configs
   ├── docker-compose.yml
   ├── prometheus.yml
@@ -206,7 +216,7 @@ return tx.Commit(ctx)
 - Always propagate OpenTelemetry trace context in message headers
 
 ### Dependencies
-- **Before adding a new Go module**, always check `go.mod` and existing `internal/platform/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
+- **Before adding a new Go module**, always check `go.mod` and existing `internal/shared/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
 - Prefer using existing dependencies over adding new ones. If an existing library provides the required primitives, implement on top of it rather than pulling in a wrapper package.
 - During planning, explicitly audit `go.mod` for overlap before proposing any `go get`.
 
@@ -240,8 +250,10 @@ Every service follows this structure in `cmd/<service>/main.go`:
 4. **Instant confirmation** — off-chain ledger updated on match, settlement in background
 5. **NATS for all async** — JetStream (durable) + Core (ephemeral)
 6. **PostgreSQL JSONB** — flexible market config, resolution parameters
-7. **Centralized auth issuance, distributed verification** — Platform service owns auth endpoints (signup, login, refresh); all services verify JWTs locally using the shared `internal/platform/auth` package and the same HMAC secret. No cross-service call for token validation.
-8. **Nginx reverse proxy** — single entry point (:8000), routes `/auth`, `/admin`, `/markets`, `/data` → platform and `/orders`, `/book`, `/ws` → trading
+7. **Split auth by service** — Platform service owns **session-auth endpoints** (`/auth/nonce`, `/auth/signup/*`, `/auth/login/*`, `/auth/refresh`, `/auth/logout`, `/auth/session`). Trading service owns the **Polymarket-compatible API-key lifecycle** (`/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key`). All services verify JWTs locally using `internal/shared/auth.Authenticate`. This split matches Polymarket's own architectural division (gamma-api vs clob).
+8. **Two non-overlapping auth middlewares** — `Authenticate` (JWT-only) for platform-owned session endpoints; `AuthenticateAPIKey` (HMAC-only, via `APIKeyReader`) for Polymarket-compat CLOB endpoints. **No endpoint accepts both.** A valid JWT on a CLOB-protected route gets 401 — enforced by a dedicated test. Rationale: keeps the auth contract unambiguous for SDK consumers and prevents the security surface from doubling on trading routes.
+9. **Nginx reverse proxy** — single entry point (:8000). Exact-match `/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key` → trading; `/auth/*` prefix (everything else), `/admin`, `/markets`, `/data` → platform; `/orders`, `/book`, `/ws` → trading.
+10. **Naming convention** — `internal/shared/` is cross-service infrastructure. Service-specific domain code lives at top-level (`internal/session/`, `internal/trading/`, `internal/market/`, `internal/affiliate/`, etc.). This resolves the earlier ambiguity where `internal/platform/` meant both "the platform service" and "shared platform-infra code."
 
 ## Git Conventions
 
