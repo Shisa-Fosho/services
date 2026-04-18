@@ -13,10 +13,13 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 
-	platformgrpc "github.com/Shisa-Fosho/services/internal/platform/grpc"
-	platformnats "github.com/Shisa-Fosho/services/internal/platform/nats"
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
-	"github.com/Shisa-Fosho/services/internal/platform/postgres"
+	"github.com/Shisa-Fosho/services/internal/shared/auth"
+	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
+	"github.com/Shisa-Fosho/services/internal/shared/httputil"
+	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/postgres"
+	tradingauth "github.com/Shisa-Fosho/services/internal/trading/auth"
 	tradingv1 "github.com/Shisa-Fosho/services/proto/gen/trading/v1"
 )
 
@@ -74,18 +77,31 @@ func run() error {
 	defer pool.Close()
 
 	// NATS.
-	nc, err := platformnats.ClientFromEnv(logger, serviceName)
+	nc, err := sharednats.ClientFromEnv(logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("connecting to nats: %w", err)
 	}
 	defer nc.Close()
 
+	// API-key auth dependencies. Trading owns the Polymarket-compatible
+	// API-key lifecycle (derive, list, revoke) — see internal/trading/auth.
+	apiKeyCfg := auth.APIKeyConfig{
+		DerivationSecret: []byte(mustGetEnv("APIKEY_DERIVATION_SECRET")),
+		EncryptionKey:    []byte(mustGetEnv("APIKEY_ENCRYPTION_KEY")),
+		ChainID:          137, // Polygon mainnet. Override via config for testnet/local.
+	}
+	if err := auth.ValidateAPIKeyConfig(apiKeyCfg); err != nil {
+		return fmt.Errorf("validating api key config: %w", err)
+	}
+	apiKeyRepo := tradingauth.NewPGRepository(pool)
+	apiKeyHandler := tradingauth.NewHandler(logger, apiKeyRepo, apiKeyCfg)
+
 	// gRPC server.
 	hs := health.NewServer()
-	checker := platformgrpc.NewPoolHealthChecker(pool)
-	go platformgrpc.WatchHealth(ctx, hs, serviceName, checker, 10*time.Second, logger)
+	checker := sharedgrpc.NewPoolHealthChecker(pool)
+	go sharedgrpc.WatchHealth(ctx, hs, serviceName, checker, 10*time.Second, logger)
 
-	grpcSrv := platformgrpc.NewServer(logger, metrics, hs)
+	grpcSrv := sharedgrpc.NewServer(logger, metrics, hs)
 	tradingv1.RegisterTradingServiceServer(grpcSrv, &tradingServer{})
 
 	// HTTP API server.
@@ -95,9 +111,17 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	apiKeyHandler.RegisterRoutes(mux)
+
+	// Middleware stack (outermost first): Recovery → RequestID → Logging.
+	var handler http.Handler = mux
+	handler = httputil.Logging(logger)(handler)
+	handler = httputil.RequestID(handler)
+	handler = httputil.Recovery(logger)(handler)
+
 	httpSrv := &http.Server{
 		Addr:              ":" + httpPort,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	go func() {
@@ -150,6 +174,14 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func mustGetEnv(key string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		panic(fmt.Sprintf("required environment variable %s is not set", key))
+	}
+	return v
 }
 
 // tradingServer implements the placeholder TradingService.

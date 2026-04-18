@@ -16,13 +16,14 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	"github.com/Shisa-Fosho/services/internal/platform/auth"
-	"github.com/Shisa-Fosho/services/internal/platform/eth"
-	platformgrpc "github.com/Shisa-Fosho/services/internal/platform/grpc"
-	"github.com/Shisa-Fosho/services/internal/platform/httputil"
-	platformnats "github.com/Shisa-Fosho/services/internal/platform/nats"
-	"github.com/Shisa-Fosho/services/internal/platform/observability"
-	"github.com/Shisa-Fosho/services/internal/platform/postgres"
+	"github.com/Shisa-Fosho/services/internal/session"
+	"github.com/Shisa-Fosho/services/internal/shared/auth"
+	"github.com/Shisa-Fosho/services/internal/shared/eth"
+	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
+	"github.com/Shisa-Fosho/services/internal/shared/httputil"
+	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
+	"github.com/Shisa-Fosho/services/internal/shared/observability"
+	"github.com/Shisa-Fosho/services/internal/shared/postgres"
 	platformv1 "github.com/Shisa-Fosho/services/proto/gen/platform/v1"
 )
 
@@ -80,7 +81,7 @@ func run() error {
 	defer pool.Close()
 
 	// NATS.
-	nc, err := platformnats.ClientFromEnv(logger, serviceName)
+	nc, err := sharednats.ClientFromEnv(logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("connecting to nats: %w", err)
 	}
@@ -110,25 +111,19 @@ func run() error {
 		FallbackHandler:  common.HexToAddress(getEnv("SAFE_FALLBACK_HANDLER", "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4")),
 	}
 
-	apiKeyCfg := auth.APIKeyConfig{
-		DerivationSecret: []byte(mustGetEnv("APIKEY_DERIVATION_SECRET")),
-		EncryptionKey:    []byte(mustGetEnv("APIKEY_ENCRYPTION_KEY")),
-		ChainID:          137, // Polygon mainnet. Override via config for testnet/local.
-	}
-	if err := auth.ValidateAPIKeyConfig(apiKeyCfg); err != nil {
-		return fmt.Errorf("validating api key config: %w", err)
-	}
+	// API-key issuance has moved to the trading service; platform no longer
+	// loads APIKEY_* env vars. See cmd/trading/main.go.
 
 	repo := data.NewPGRepository(pool)
 	secureCookies := siweDomain != "localhost"
-	authHandler := auth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies, apiKeyCfg)
+	sessionHandler := session.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
 
 	// gRPC server.
 	hs := health.NewServer()
-	checker := platformgrpc.NewPoolHealthChecker(pool)
-	go platformgrpc.WatchHealth(ctx, hs, serviceName, checker, 10*time.Second, logger)
+	checker := sharedgrpc.NewPoolHealthChecker(pool)
+	go sharedgrpc.WatchHealth(ctx, hs, serviceName, checker, 10*time.Second, logger)
 
-	grpcSrv := platformgrpc.NewServer(logger, metrics, hs)
+	grpcSrv := sharedgrpc.NewServer(logger, metrics, hs)
 	platformv1.RegisterPlatformServiceServer(grpcSrv, &platformServer{})
 
 	// HTTP API server.
@@ -138,7 +133,7 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	authHandler.RegisterRoutes(mux)
+	sessionHandler.RegisterRoutes(mux)
 
 	// Middleware stack (outermost first): Recovery → RequestID → Logging.
 	var handler http.Handler = mux

@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -126,6 +127,10 @@ func VerifyEIP712Signature(address, timestamp, nonce, message, signature string,
 // DeriveAPIKey deterministically derives an API key, HMAC secret, and
 // passphrase from a server-side secret and the user's EIP-712 signature bytes.
 // Same inputs always produce the same outputs (idempotent).
+//
+// The HMAC secret is URL-safe base64 encoded (with '=' padding) to match the
+// Polymarket clob-client contract — clients decode it back to raw bytes
+// before using it as the HMAC-SHA256 key for L2 request signing.
 func DeriveAPIKey(secret, sigBytes []byte) (apiKey, hmacSecret, passphrase string) {
 	mac1 := hmac.New(sha256.New, secret)
 	mac1.Write(append([]byte("api-key"), sigBytes...))
@@ -139,7 +144,7 @@ func DeriveAPIKey(secret, sigBytes []byte) (apiKey, hmacSecret, passphrase strin
 	mac3.Write(append([]byte("passphrase"), sigBytes...))
 	result3 := mac3.Sum(nil)
 
-	return hex.EncodeToString(result1[:16]), hex.EncodeToString(result2), hex.EncodeToString(result3[:16])
+	return hex.EncodeToString(result1[:16]), base64.URLEncoding.EncodeToString(result2), hex.EncodeToString(result3[:16])
 }
 
 // HashAPIKey returns the hex-encoded SHA-256 hash of an API key.

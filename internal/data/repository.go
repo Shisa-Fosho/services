@@ -2,9 +2,17 @@ package data
 
 import "context"
 
-// Repository defines the persistence interface for the data domain.
+// SessionRepository is the platform service's persistence interface for
+// session-auth state (users + refresh tokens) and the position read/write
+// primitives shared with downstream services.
+//
+// API-key storage has moved to trading/auth — see
+// internal/trading/auth.APIKeyRepository for derive/list/revoke and
+// internal/shared/auth.APIKeyReader for the narrow read interface used by
+// the L2 HMAC middleware.
+//
 // Implementations must be safe for concurrent use.
-type Repository interface {
+type SessionRepository interface {
 	// CreateUser persists a new user. Validates input via ValidateUser
 	// before persisting. Returns ErrInvalidUser for shape violations,
 	// ErrDuplicateUser if the address or username already exists.
@@ -43,20 +51,4 @@ type Repository interface {
 
 	// RevokeAllRefreshTokens revokes all active refresh tokens for a user.
 	RevokeAllRefreshTokens(ctx context.Context, userAddress string) error
-
-	// UpsertAPIKey creates or updates an API key. On conflict (same key_hash),
-	// updates expires_at and hmac_secret_encrypted (idempotent re-derivation).
-	// Validates input via ValidateAPIKey before persisting.
-	UpsertAPIKey(ctx context.Context, key *APIKey) error
-
-	// GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its hash.
-	// Returns ErrNotFound if the key does not exist, is revoked, or is expired.
-	GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error)
-
-	// GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user.
-	GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error)
-
-	// RevokeAPIKey marks an API key as revoked by its key_hash.
-	// Returns ErrNotFound if the key does not exist or does not belong to the user.
-	RevokeAPIKey(ctx context.Context, keyHash string, userAddress string) error
 }

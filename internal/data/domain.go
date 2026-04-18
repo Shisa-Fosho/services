@@ -15,7 +15,6 @@ var (
 	ErrInvalidPosition = errors.New("invalid position")
 	ErrTokenRevoked    = errors.New("token revoked")
 	ErrTokenExpired    = errors.New("token expired")
-	ErrInvalidAPIKey   = errors.New("invalid api key")
 )
 
 // SignupMethod represents how a user registered.
@@ -89,18 +88,6 @@ type RefreshToken struct {
 	ExpiresAt   time.Time `db:"expires_at"`
 	Revoked     bool      `db:"revoked"`
 	CreatedAt   time.Time `db:"created_at"`
-}
-
-// APIKey represents a stored API key for programmatic access.
-type APIKey struct {
-	KeyHash             string    `db:"key_hash"`              // SHA-256 of the raw API key, hex-encoded. PK.
-	UserAddress         string    `db:"user_address"`          // FK to users.address.
-	HMACSecretEncrypted string    `db:"hmac_secret_encrypted"` // AES-256-GCM ciphertext.
-	PassphraseHash      string    `db:"passphrase_hash"`       // SHA-256 of the passphrase, hex-encoded.
-	Label               string    `db:"label"`
-	ExpiresAt           time.Time `db:"expires_at"`
-	Revoked             bool      `db:"revoked"`
-	CreatedAt           time.Time `db:"created_at"`
 }
 
 // Position represents a user's holding in a specific market and side.
