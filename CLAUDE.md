@@ -7,26 +7,14 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│              External Clients               │
-│         (Web App, Bots, Admin App)          │
-└─────────────────┬───────────────────────────┘
-                  │ All traffic
-                  ▼
-         ┌────────────────┐
-         │  Nginx :8000   │
-         │  Reverse Proxy │
-         └───┬────────┬───┘
-             │        │
-  /orders,   │        │ /auth/nonce,
-  /book,     │        │ /auth/signup,
-  /ws,       │        │ /auth/login,
-  /auth/     │        │ /auth/refresh,
-  derive-    │        │ /auth/logout,
-  api-key,   │        │ /auth/session,
-  /auth/     │        │ /admin, /markets,
-  api-key(s) │        │ /data
-             ▼        ▼
+┌──────────────────┐   ┌──────────────────┐
+│  External Client │   │  External Client │
+│ (CLOB/WebSocket/ │   │ (Web App / Admin │
+│   Bots)          │   │   App / Browser) │
+└────────┬─────────┘   └────────┬─────────┘
+         │ /orders, /book,      │ /auth/*, /admin,
+         │ /ws, /auth/api-key*  │ /markets, /data
+         ▼                      ▼
 ┌─────────────────┐  ┌─────────────────┐
 │ Trading Service │  │ Platform Service│
 │ :8080 (HTTP)    │  │ :8081 (HTTP)    │
@@ -71,7 +59,6 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
 
 | Service | Responsibility | HTTP Port | gRPC Port | Metrics Port |
 |---------|---------------|-----------|-----------|--------------|
-| Nginx | Reverse proxy, route to upstream services | 8000 | — | — |
 | Trading | CLOB engine, REST API, WebSocket, Polymarket-compatible API-key lifecycle (derive/list/revoke) | 8080 | 9001 | 9091 |
 | Platform | Session auth (SIWE/JWT/signup/login/refresh), Market API, Data API, Admin API, Affiliate | 8081 | 9002 | 9092 |
 | Settlement Worker | On-chain trade settlement, relayer | — | 9003 | 9093 |
@@ -253,7 +240,7 @@ Every service follows this structure in `cmd/<service>/main.go`:
 6. **PostgreSQL JSONB** — flexible market config, resolution parameters
 7. **Split auth by service** — Platform service owns **session-auth endpoints** (`/auth/nonce`, `/auth/signup/*`, `/auth/login/*`, `/auth/refresh`, `/auth/logout`, `/auth/session`). Trading service owns the **Polymarket-compatible API-key lifecycle** (`/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key`). JWT verification lives in `internal/platform/auth` and is platform-only; HMAC/API-key verification lives in `internal/trading/auth` and is trading-only. This split matches Polymarket's own architectural division (gamma-api vs clob).
 8. **Two non-overlapping auth middlewares** — `Authenticate` (JWT-only) for platform-owned session endpoints; `AuthenticateAPIKey` (HMAC-only, via `APIKeyReader`) for Polymarket-compat CLOB endpoints. **No endpoint accepts both.** A valid JWT on a CLOB-protected route gets 401 — enforced by a dedicated test. Rationale: keeps the auth contract unambiguous for SDK consumers and prevents the security surface from doubling on trading routes.
-9. **Nginx reverse proxy** — single entry point (:8000). Exact-match `/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key` → trading; `/auth/*` prefix (everything else), `/admin`, `/markets`, `/data` → platform; `/orders`, `/book`, `/ws` → trading.
+9. **No reverse proxy — direct service access** — clients connect to trading (:8080) or platform (:8081) directly by hostname/port. There is no single-entry-point proxy. This means the Polymarket clob-client SDK cannot reach all its endpoints from a single host: `/markets`, `/data/orders`, `/data/trades` live on the platform host while `/orders`, `/book`, `/auth/api-key*` live on the trading host. SDK host configuration must point each endpoint group at the correct service. Endpoint migration to reconcile this split is handled in a separate task.
 10. **Naming convention** — `internal/shared/` is cross-service infrastructure. Service-specific domain code lives under the service's own path (`internal/platform/auth/`, `internal/trading/`, `internal/market/`, `internal/affiliate/`, etc.). This resolves the earlier ambiguity where `internal/platform/` meant both "the platform service" and "shared platform-infra code."
 
 ## Git Conventions
@@ -329,7 +316,8 @@ ABIs consumed from the `contracts` repo via copy. No import dependency.
 
 | Infrastructure | Port | Purpose |
 |---------------|------|---------|
-| Nginx | 8000 | Reverse proxy (single entry point) |
+| Trading (HTTP) | 8080 | CLOB API, WebSocket, API-key lifecycle |
+| Platform (HTTP) | 8081 | Session auth, Market API, Data API, Admin API |
 | PostgreSQL | 5432 | Primary data store |
 | NATS | 4222 | Messaging (client) |
 | NATS | 8222 | NATS monitoring |
