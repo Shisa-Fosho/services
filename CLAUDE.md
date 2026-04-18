@@ -119,12 +119,13 @@ internal/
   │   ├── grpc/             # gRPC server/client helpers, interceptors
   │   ├── nats/             # NATS client, JetStream helpers, instrumentation
   │   ├── postgres/         # Connection pooling, migration helpers
-  │   ├── auth/             # JWT, SIWE, EIP-712 verify, HMAC, middleware, APIKey type
+  │   ├── envutil/          # Env-var helpers (Get/MustGet) used by service main funcs
   │   ├── httputil/         # JSON helpers, HTTP middleware (RequestID, Logging, Recovery)
   │   └── eth/              # Ethereum utilities (address validation, Safe address derivation)
-  ├── session/              # Platform service — session-auth handler (signup/login/refresh/logout/session)
+  ├── platform/
+  │   └── auth/             # Platform service — session-auth handlers + JWT, SIWE, JWT middleware
   ├── trading/              # Trading service domain (Order, Trade, Book, Balance)
-  │   └── auth/             #   └─ API-key lifecycle (derive/list/revoke) + APIKeyRepository
+  │   └── auth/             #   └─ API-key lifecycle + HMAC primitives + AuthenticateAPIKey middleware
   ├── market/               # Platform service — market domain
   ├── data/                 # Platform service — SessionRepository (users, refresh tokens, positions)
   ├── admin/                # Platform service — admin domain
@@ -250,10 +251,10 @@ Every service follows this structure in `cmd/<service>/main.go`:
 4. **Instant confirmation** — off-chain ledger updated on match, settlement in background
 5. **NATS for all async** — JetStream (durable) + Core (ephemeral)
 6. **PostgreSQL JSONB** — flexible market config, resolution parameters
-7. **Split auth by service** — Platform service owns **session-auth endpoints** (`/auth/nonce`, `/auth/signup/*`, `/auth/login/*`, `/auth/refresh`, `/auth/logout`, `/auth/session`). Trading service owns the **Polymarket-compatible API-key lifecycle** (`/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key`). All services verify JWTs locally using `internal/shared/auth.Authenticate`. This split matches Polymarket's own architectural division (gamma-api vs clob).
+7. **Split auth by service** — Platform service owns **session-auth endpoints** (`/auth/nonce`, `/auth/signup/*`, `/auth/login/*`, `/auth/refresh`, `/auth/logout`, `/auth/session`). Trading service owns the **Polymarket-compatible API-key lifecycle** (`/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key`). JWT verification lives in `internal/platform/auth` and is platform-only; HMAC/API-key verification lives in `internal/trading/auth` and is trading-only. This split matches Polymarket's own architectural division (gamma-api vs clob).
 8. **Two non-overlapping auth middlewares** — `Authenticate` (JWT-only) for platform-owned session endpoints; `AuthenticateAPIKey` (HMAC-only, via `APIKeyReader`) for Polymarket-compat CLOB endpoints. **No endpoint accepts both.** A valid JWT on a CLOB-protected route gets 401 — enforced by a dedicated test. Rationale: keeps the auth contract unambiguous for SDK consumers and prevents the security surface from doubling on trading routes.
 9. **Nginx reverse proxy** — single entry point (:8000). Exact-match `/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key` → trading; `/auth/*` prefix (everything else), `/admin`, `/markets`, `/data` → platform; `/orders`, `/book`, `/ws` → trading.
-10. **Naming convention** — `internal/shared/` is cross-service infrastructure. Service-specific domain code lives at top-level (`internal/session/`, `internal/trading/`, `internal/market/`, `internal/affiliate/`, etc.). This resolves the earlier ambiguity where `internal/platform/` meant both "the platform service" and "shared platform-infra code."
+10. **Naming convention** — `internal/shared/` is cross-service infrastructure. Service-specific domain code lives under the service's own path (`internal/platform/auth/`, `internal/trading/`, `internal/market/`, `internal/affiliate/`, etc.). This resolves the earlier ambiguity where `internal/platform/` meant both "the platform service" and "shared platform-infra code."
 
 ## Git Conventions
 

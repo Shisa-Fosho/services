@@ -15,30 +15,27 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"go.uber.org/zap/zaptest"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	sharedauth "github.com/Shisa-Fosho/services/internal/shared/auth"
 )
 
 // fakeRepo is an in-memory APIKeyRepository implementation for tests.
 type fakeRepo struct {
-	apiKeys map[string]*sharedauth.APIKey
+	apiKeys map[string]*APIKey
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{apiKeys: make(map[string]*sharedauth.APIKey)}
+	return &fakeRepo{apiKeys: make(map[string]*APIKey)}
 }
 
-func (r *fakeRepo) UpsertAPIKey(_ context.Context, key *sharedauth.APIKey) error {
+func (r *fakeRepo) UpsertAPIKey(_ context.Context, key *APIKey) error {
 	r.apiKeys[key.KeyHash] = key
 	return nil
 }
 
-func (r *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*sharedauth.APIKey, error) {
+func (r *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*APIKey, error) {
 	k, ok := r.apiKeys[keyHash]
 	if !ok || k.Revoked || k.ExpiresAt.Before(time.Now()) {
 		return nil, data.ErrNotFound
@@ -46,8 +43,8 @@ func (r *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*sharedau
 	return k, nil
 }
 
-func (r *fakeRepo) GetAPIKeysByUser(_ context.Context, userAddress string) ([]*sharedauth.APIKey, error) {
-	var result []*sharedauth.APIKey
+func (r *fakeRepo) GetAPIKeysByUser(_ context.Context, userAddress string) ([]*APIKey, error) {
+	var result []*APIKey
 	for _, k := range r.apiKeys {
 		if k.UserAddress == userAddress && !k.Revoked {
 			result = append(result, k)
@@ -66,8 +63,8 @@ func (r *fakeRepo) RevokeAPIKey(_ context.Context, keyHash string, userAddress s
 }
 
 // testConfig returns a valid APIKeyConfig for tests.
-func testConfig() sharedauth.APIKeyConfig {
-	return sharedauth.APIKeyConfig{
+func testConfig() APIKeyConfig {
+	return APIKeyConfig{
 		DerivationSecret: []byte("test-derivation-secret-32-bytes!"),
 		EncryptionKey:    []byte("test-encryption-key-32-bytes!!xx"),
 		ChainID:          137,
@@ -78,56 +75,6 @@ func testConfig() sharedauth.APIKeyConfig {
 func testHandler(t *testing.T, repo *fakeRepo) *Handler {
 	t.Helper()
 	return NewHandler(zaptest.NewLogger(t), repo, testConfig())
-}
-
-// clobAuthTypedData rebuilds the same EIP-712 ClobAuth typed-data the
-// real auth package signs, so we can produce valid test signatures.
-func clobAuthTypedData(address, timestamp, nonce, message string, chainID int64) apitypes.TypedData {
-	return apitypes.TypedData{
-		Types: apitypes.Types{
-			"EIP712Domain": {
-				{Name: "name", Type: "string"},
-				{Name: "version", Type: "string"},
-				{Name: "chainId", Type: "uint256"},
-				{Name: "verifyingContract", Type: "address"},
-			},
-			"ClobAuth": {
-				{Name: "address", Type: "address"},
-				{Name: "timestamp", Type: "string"},
-				{Name: "nonce", Type: "uint256"},
-				{Name: "message", Type: "string"},
-			},
-		},
-		PrimaryType: "ClobAuth",
-		Domain: apitypes.TypedDataDomain{
-			Name:              "ClobAuthDomain",
-			Version:           "1",
-			ChainId:           math.NewHexOrDecimal256(chainID),
-			VerifyingContract: "0x0000000000000000000000000000000000000000",
-		},
-		Message: apitypes.TypedDataMessage{
-			"address":   address,
-			"timestamp": timestamp,
-			"nonce":     nonce,
-			"message":   message,
-		},
-	}
-}
-
-func eip712Hash(t *testing.T, address string) []byte {
-	t.Helper()
-	td := clobAuthTypedData(address, "1700000000", "0", sharedauth.ClobAuthMessage, 137)
-	domainHash, err := td.HashStruct("EIP712Domain", td.Domain.Map())
-	if err != nil {
-		t.Fatalf("hashing domain: %v", err)
-	}
-	messageHash, err := td.HashStruct(td.PrimaryType, td.Message)
-	if err != nil {
-		t.Fatalf("hashing message: %v", err)
-	}
-	rawData := append([]byte{0x19, 0x01}, domainHash...)
-	rawData = append(rawData, messageHash...)
-	return crypto.Keccak256(rawData)
 }
 
 // signedEIP712 generates a real EIP-712 ClobAuth signature using a freshly
@@ -152,10 +99,10 @@ func signedEIP712(t *testing.T) (address string, sigHex string) {
 func l1Request(t *testing.T, address, sigHex, timestamp, nonce string) *http.Request {
 	t.Helper()
 	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	r.Header.Set(sharedauth.HeaderAddress, address)
-	r.Header.Set(sharedauth.HeaderSignature, sigHex)
-	r.Header.Set(sharedauth.HeaderTimestamp, timestamp)
-	r.Header.Set(sharedauth.HeaderNonce, nonce)
+	r.Header.Set(HeaderAddress, address)
+	r.Header.Set(HeaderSignature, sigHex)
+	r.Header.Set(HeaderTimestamp, timestamp)
+	r.Header.Set(HeaderNonce, nonce)
 	return r
 }
 
@@ -205,11 +152,11 @@ func TestDeriveAPIKey_HappyPath(t *testing.T) {
 	if len(repo.apiKeys) != 1 {
 		t.Errorf("repo apiKeys count = %d, want 1", len(repo.apiKeys))
 	}
-	stored := repo.apiKeys[sharedauth.HashAPIKey(resp.APIKey)]
+	stored := repo.apiKeys[HashAPIKey(resp.APIKey)]
 	if stored == nil {
 		t.Fatal("derived key not stored")
 	}
-	if stored.PassphraseHash != sharedauth.HashAPIKey(resp.Passphrase) {
+	if stored.PassphraseHash != HashAPIKey(resp.Passphrase) {
 		t.Error("stored passphrase hash does not match hash of returned passphrase")
 	}
 }
@@ -261,9 +208,9 @@ func TestDeriveAPIKey_DefaultNonce(t *testing.T) {
 	h := testHandler(t, repo)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	r.Header.Set(sharedauth.HeaderAddress, address)
-	r.Header.Set(sharedauth.HeaderSignature, sigHex)
-	r.Header.Set(sharedauth.HeaderTimestamp, "1700000000")
+	r.Header.Set(HeaderAddress, address)
+	r.Header.Set(HeaderSignature, sigHex)
+	r.Header.Set(HeaderTimestamp, "1700000000")
 	w := httptest.NewRecorder()
 
 	h.deriveAPIKey(w, r)
@@ -351,16 +298,16 @@ func seedAPIKey(t *testing.T, repo *fakeRepo, address string) (rawKey, secretB64
 	passphrase = "test-passphrase-0123456789abcdef"
 
 	cfg := testConfig()
-	encrypted, err := sharedauth.EncryptSecret(cfg.EncryptionKey, secretB64)
+	encrypted, err := EncryptSecret(cfg.EncryptionKey, secretB64)
 	if err != nil {
 		t.Fatalf("encrypting secret: %v", err)
 	}
 
-	repo.apiKeys[sharedauth.HashAPIKey(rawKey)] = &sharedauth.APIKey{
-		KeyHash:             sharedauth.HashAPIKey(rawKey),
+	repo.apiKeys[HashAPIKey(rawKey)] = &APIKey{
+		KeyHash:             HashAPIKey(rawKey),
 		UserAddress:         address,
 		HMACSecretEncrypted: encrypted,
-		PassphraseHash:      sharedauth.HashAPIKey(passphrase),
+		PassphraseHash:      HashAPIKey(passphrase),
 		ExpiresAt:           time.Now().Add(24 * time.Hour),
 	}
 	return rawKey, secretB64, passphrase
@@ -371,16 +318,16 @@ func seedAPIKey(t *testing.T, repo *fakeRepo, address string) (rawKey, secretB64
 func signL2Request(t *testing.T, r *http.Request, apiKey, secretB64, passphrase, body string) {
 	t.Helper()
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	msg := sharedauth.BuildHMACMessage(ts, r.Method, r.URL.Path, body)
+	msg := BuildHMACMessage(ts, r.Method, r.URL.Path, body)
 	secretBytes, _ := base64.URLEncoding.DecodeString(secretB64)
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(msg))
 	sig := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
-	r.Header.Set(sharedauth.HeaderAPIKey, apiKey)
-	r.Header.Set(sharedauth.HeaderTimestamp, ts)
-	r.Header.Set(sharedauth.HeaderSignature, sig)
-	r.Header.Set(sharedauth.HeaderPassphrase, passphrase)
+	r.Header.Set(HeaderAPIKey, apiKey)
+	r.Header.Set(HeaderTimestamp, ts)
+	r.Header.Set(HeaderSignature, sig)
+	r.Header.Set(HeaderPassphrase, passphrase)
 }
 
 func TestRevokeAPIKey_Success(t *testing.T) {
@@ -388,10 +335,10 @@ func TestRevokeAPIKey_Success(t *testing.T) {
 
 	addr := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").Hex()
 	rawKeyToRevoke := "target-key-to-revoke"
-	keyHash := sharedauth.HashAPIKey(rawKeyToRevoke)
+	keyHash := HashAPIKey(rawKeyToRevoke)
 
 	repo := newFakeRepo()
-	repo.apiKeys[keyHash] = &sharedauth.APIKey{
+	repo.apiKeys[keyHash] = &APIKey{
 		KeyHash:     keyHash,
 		UserAddress: addr,
 		ExpiresAt:   time.Now().Add(24 * time.Hour),
@@ -492,10 +439,10 @@ func TestListAPIKeys_WithKeys(t *testing.T) {
 	addr := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").Hex()
 	repo := newFakeRepo()
 
-	repo.apiKeys["hash-one"] = &sharedauth.APIKey{
+	repo.apiKeys["hash-one"] = &APIKey{
 		KeyHash: "hash-one", UserAddress: addr, ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
-	repo.apiKeys["hash-two"] = &sharedauth.APIKey{
+	repo.apiKeys["hash-two"] = &APIKey{
 		KeyHash: "hash-two", UserAddress: addr, ExpiresAt: time.Now().Add(24 * time.Hour),
 	}
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
@@ -527,7 +474,7 @@ func TestListAPIKeys_SecretsStripped(t *testing.T) {
 
 	addr := common.HexToAddress("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").Hex()
 	repo := newFakeRepo()
-	repo.apiKeys["sensitive"] = &sharedauth.APIKey{
+	repo.apiKeys["sensitive"] = &APIKey{
 		KeyHash:             "sensitive",
 		UserAddress:         addr,
 		HMACSecretEncrypted: "super-secret-ciphertext",

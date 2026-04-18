@@ -17,96 +17,6 @@ import (
 	"github.com/Shisa-Fosho/services/internal/data"
 )
 
-// --- Authenticate (JWT-only) tests ---
-
-func TestAuthenticate_ValidToken(t *testing.T) {
-	t.Parallel()
-
-	jwtMgr, _ := NewJWTManager(testJWTConfig())
-	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	token, _ := jwtMgr.IssueAccessToken(addr)
-
-	var gotAddr string
-	handler := Authenticate(jwtMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAddr = UserAddressFrom(r.Context())
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
-	}
-	if gotAddr != addr {
-		t.Errorf("address = %q, want %q", gotAddr, addr)
-	}
-}
-
-func TestAuthenticate_MissingHeader(t *testing.T) {
-	t.Parallel()
-
-	jwtMgr, _ := NewJWTManager(testJWTConfig())
-	handler := Authenticate(jwtMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler should not be called")
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestAuthenticate_MalformedHeader(t *testing.T) {
-	t.Parallel()
-
-	jwtMgr, _ := NewJWTManager(testJWTConfig())
-	handler := Authenticate(jwtMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler should not be called")
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "NotBearer some-token")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestAuthenticate_ExpiredToken(t *testing.T) {
-	t.Parallel()
-
-	jwtMgr, _ := NewJWTManager(testJWTConfig())
-	handler := Authenticate(jwtMgr)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler should not be called")
-	}))
-
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer expired.jwt.token")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, r)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
-	}
-	if !strings.Contains(w.Body.String(), "invalid token") {
-		t.Errorf("body = %q, want 'invalid token'", w.Body.String())
-	}
-}
-
-// --- AuthenticateAPIKey (HMAC-only) tests ---
-
 // fakeAPIKeyReader is an in-memory APIKeyReader for tests.
 type fakeAPIKeyReader struct {
 	keys map[string]*APIKey
@@ -204,19 +114,18 @@ func TestAuthenticateAPIKey_ValidRequest(t *testing.T) {
 // CLOB-protected endpoint rejects JWT Bearer tokens even if they're otherwise
 // valid. This is the contract-change check that prevents accidental
 // reintroduction of a combined "accept either" middleware.
+//
+// The specific token shape doesn't matter — AuthenticateAPIKey rejects before
+// ever looking at Authorization. A plausible Bearer value keeps the intent
+// readable without pulling the JWT package across the service boundary.
 func TestAuthenticateAPIKey_RejectsJWT(t *testing.T) {
 	t.Parallel()
 	encKey := []byte("test-encryption-key-32-bytes!!!!")
 	reader := &fakeAPIKeyReader{keys: make(map[string]*APIKey)}
 	handler := newAPIKeyTestHandler(t, reader, encKey)
 
-	// Mint a perfectly valid JWT. The point is that AuthenticateAPIKey must
-	// NOT fall back to JWT validation on a CLOB-protected route.
-	jwtMgr, _ := NewJWTManager(testJWTConfig())
-	token, _ := jwtMgr.IssueAccessToken("0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd")
-
 	r := httptest.NewRequest(http.MethodGet, "/orders", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.valid.looking.jwt")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, r)

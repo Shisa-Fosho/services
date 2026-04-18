@@ -154,6 +154,11 @@ func HashAPIKey(apiKey string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// hexToBytes decodes a hex string, stripping an optional "0x" prefix.
+func hexToBytes(s string) ([]byte, error) {
+	return hex.DecodeString(strings.TrimPrefix(s, "0x"))
+}
+
 // EncryptSecret encrypts plaintext using AES-256-GCM. Returns hex-encoded
 // nonce || ciphertext. The nonce is randomly generated per call.
 func EncryptSecret(key []byte, plaintext string) (string, error) {

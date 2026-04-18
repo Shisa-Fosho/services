@@ -16,8 +16,8 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	"github.com/Shisa-Fosho/services/internal/session"
-	"github.com/Shisa-Fosho/services/internal/shared/auth"
+	platformauth "github.com/Shisa-Fosho/services/internal/platform/auth"
+	"github.com/Shisa-Fosho/services/internal/shared/envutil"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
@@ -60,7 +60,7 @@ func run() error {
 	}()
 
 	// Metrics HTTP server.
-	metricsPort := getEnv("METRICS_PORT", "9092")
+	metricsPort := envutil.Get("METRICS_PORT", "9092")
 	metricsSrv := &http.Server{
 		Addr:              ":" + metricsPort,
 		Handler:           metrics.Handler(),
@@ -88,27 +88,27 @@ func run() error {
 	defer nc.Close()
 
 	// Auth dependencies.
-	jwtCfg := auth.JWTConfig{
-		AccessSecret:  []byte(mustGetEnv("JWT_ACCESS_SECRET")),
-		RefreshSecret: []byte(mustGetEnv("JWT_REFRESH_SECRET")),
+	jwtCfg := platformauth.JWTConfig{
+		AccessSecret:  []byte(envutil.MustGet("JWT_ACCESS_SECRET")),
+		RefreshSecret: []byte(envutil.MustGet("JWT_REFRESH_SECRET")),
 		AccessTTL:     15 * time.Minute,
 		RefreshTTL:    7 * 24 * time.Hour,
 		Issuer:        "shisa-platform",
 	}
-	jwtMgr, err := auth.NewJWTManager(jwtCfg)
+	jwtMgr, err := platformauth.NewJWTManager(jwtCfg)
 	if err != nil {
 		return fmt.Errorf("creating jwt manager: %w", err)
 	}
 
-	siweDomain := getEnv("SIWE_DOMAIN", "localhost")
-	siweVerifier := auth.NewSIWEVerifier(auth.SIWEConfig{
+	siweDomain := envutil.Get("SIWE_DOMAIN", "localhost")
+	siweVerifier := platformauth.NewSIWEVerifier(platformauth.SIWEConfig{
 		Domain: siweDomain,
 	})
 
 	safeCfg := eth.SafeConfig{
-		FactoryAddress:   common.HexToAddress(getEnv("SAFE_FACTORY_ADDRESS", "0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2")),
-		SingletonAddress: common.HexToAddress(getEnv("SAFE_SINGLETON_ADDRESS", "0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552")),
-		FallbackHandler:  common.HexToAddress(getEnv("SAFE_FALLBACK_HANDLER", "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4")),
+		FactoryAddress:   common.HexToAddress(envutil.Get("SAFE_FACTORY_ADDRESS", "0xa6B71E26C5e0845f74c812102Ca7114b6a896AB2")),
+		SingletonAddress: common.HexToAddress(envutil.Get("SAFE_SINGLETON_ADDRESS", "0xd9Db270c1B5E3Bd161E8c8503c55cEABeE709552")),
+		FallbackHandler:  common.HexToAddress(envutil.Get("SAFE_FALLBACK_HANDLER", "0xf48f2B2d2a534e402487b3ee7C18c33Aec0Fe5e4")),
 	}
 
 	// API-key issuance has moved to the trading service; platform no longer
@@ -116,7 +116,7 @@ func run() error {
 
 	repo := data.NewPGRepository(pool)
 	secureCookies := siweDomain != "localhost"
-	sessionHandler := session.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
+	sessionHandler := platformauth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
 
 	// gRPC server.
 	hs := health.NewServer()
@@ -127,7 +127,7 @@ func run() error {
 	platformv1.RegisterPlatformServiceServer(grpcSrv, &platformServer{})
 
 	// HTTP API server.
-	httpPort := getEnv("HTTP_PORT", "8081")
+	httpPort := envutil.Get("HTTP_PORT", "8081")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -154,7 +154,7 @@ func run() error {
 	}()
 
 	// Start gRPC listener.
-	grpcPort := getEnv("GRPC_PORT", "9002")
+	grpcPort := envutil.Get("GRPC_PORT", "9002")
 	lis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
 		return fmt.Errorf("listening on grpc port %s: %w", grpcPort, err)
@@ -189,21 +189,6 @@ func run() error {
 
 	logger.Info("shutdown complete")
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
-func mustGetEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		panic(fmt.Sprintf("required environment variable %s is not set", key))
-	}
-	return v
 }
 
 // platformServer implements the placeholder PlatformService.

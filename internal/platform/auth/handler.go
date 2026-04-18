@@ -1,10 +1,11 @@
-// Package session implements the platform service's session-auth HTTP endpoints:
-// SIWE signup/login, JWT refresh, logout, and session info.
+// Package auth implements the platform service's session-auth HTTP endpoints
+// (SIWE signup/login, JWT refresh, logout, session info) plus the underlying
+// JWT and SIWE primitives and the JWT-only Authenticate middleware.
 //
-// API-key lifecycle (derive, list, revoke) lives in the trading service at
-// internal/trading/auth. This split matches Polymarket's architectural
-// division: gamma-api handles session, clob handles API keys.
-package session
+// API-key lifecycle (derive, list, revoke) and HMAC verification live in the
+// trading service at internal/trading/auth. This split matches Polymarket's
+// architectural division: gamma-api handles session, clob handles API keys.
+package auth
 
 import (
 	"errors"
@@ -16,7 +17,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/Shisa-Fosho/services/internal/data"
-	"github.com/Shisa-Fosho/services/internal/shared/auth"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
@@ -27,14 +27,14 @@ const refreshCookieName = "refresh_token"
 type Handler struct {
 	logger  *zap.Logger
 	repo    data.SessionRepository
-	jwt     *auth.JWTManager
-	siwe    auth.MessageVerifier
+	jwt     *JWTManager
+	siwe    MessageVerifier
 	safeCfg eth.SafeConfig
 	secure  bool // Set Secure flag on cookies (true for non-localhost).
 }
 
 // NewHandler creates a new session handler.
-func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *auth.JWTManager, siwe auth.MessageVerifier, safeCfg eth.SafeConfig, secure bool) *Handler {
+func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool) *Handler {
 	return &Handler{
 		logger:  logger,
 		repo:    repo,
@@ -52,7 +52,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/login/wallet", h.loginWallet)
 	mux.HandleFunc("POST /auth/refresh", h.refresh)
 	mux.HandleFunc("POST /auth/logout", h.logout)
-	mux.Handle("GET /auth/session", auth.Authenticate(h.jwt)(http.HandlerFunc(h.session)))
+	mux.Handle("GET /auth/session", Authenticate(h.jwt)(http.HandlerFunc(h.session)))
 }
 
 type nonceResponse struct {
@@ -60,7 +60,7 @@ type nonceResponse struct {
 }
 
 func (h *Handler) nonce(w http.ResponseWriter, _ *http.Request) {
-	_ = httputil.EncodeJSON(w, http.StatusOK, nonceResponse{Nonce: auth.GenerateNonce()})
+	_ = httputil.EncodeJSON(w, http.StatusOK, nonceResponse{Nonce: GenerateNonce()})
 }
 
 type walletSignupRequest struct {
@@ -236,7 +236,7 @@ type sessionResponse struct {
 }
 
 func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
-	address := auth.UserAddressFrom(r.Context())
+	address := UserAddressFrom(r.Context())
 	user, err := h.repo.GetUserByAddress(r.Context(), address)
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) {
