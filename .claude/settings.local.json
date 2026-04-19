@@ -76,7 +76,13 @@
       "Bash(find:*)",
       "Bash(golangci-lint run:*)",
       "Bash(goimports:*)",
-      "Bash(gh search:*)"
+      "Bash(gh search:*)",
+      "WebFetch(domain:www.alexedwards.net)",
+      "Bash(cmd *)",
+      "Read(//c/Users/darre/.claude/**)",
+      "Read(//c/Users/darre/**)",
+      "Bash(python *)",
+      "Bash(claude mcp *)"
     ]
   },
   "outputStyle": "Learning"

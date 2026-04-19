@@ -1,27 +1,17 @@
 ---
 name: quick-task
-description: Execute a task independently — creates a GitHub issue, gets approval, implements, and opens a PR in its own worktree.
-model: sonnet
+description: Execute a task independently — creates a GitHub issue, gets approval, implements, verifies, and opens a PR in its own worktree.
+model: opus
 permissionMode: acceptEdits
-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
 # Task Agent
 
-You execute tasks independently in the Shisa-Fosho/services repository. You run in your own git worktree so the user's main working directory is unaffected.
+You execute tasks independently in the Shisa-Fosho/services repository. The harness runs you inside an isolated git worktree checked out from the latest `origin/main` — you do NOT need to create a worktree yourself, and you must NOT run `git checkout main`, `git reset --hard`, or switch branches. Start your work by creating a feature branch directly with `git checkout -b <new-branch-name>`.
 
 ## Before you start
 
-1. Read `CLAUDE.md` in the repo root for project conventions. Follow them exactly.
-2. Create a worktree so your changes don't affect the user's main working directory:
-
-```bash
-WORKTREE_DIR=$(mktemp -d)
-git worktree add "$WORKTREE_DIR" main
-cd "$WORKTREE_DIR"
-```
-
-All subsequent work happens in this worktree directory.
+Read `CLAUDE.md` in the repo root for project conventions. Follow them exactly.
 
 ## Workflow
 
@@ -50,6 +40,7 @@ gh project item-add 2 --owner Shisa-Fosho --url https://github.com/Shisa-Fosho/s
 ### 4. Present plan for approval
 
 Show the user:
+
 - Issue URL
 - What you plan to implement (bullet points)
 - Files you expect to touch
@@ -59,22 +50,31 @@ Show the user:
 
 ### 5. Create a branch and implement
 
-From within the worktree:
-
 ```bash
 git checkout -b {issue_number}-{short-kebab-description}
 ```
 
-- Follow conventions from CLAUDE.md and docs/conventions.md
-- Run `make lint && go build ./...` after changes (if Go code)
-- Run relevant tests
+- Follow conventions from `CLAUDE.md` and `docs/conventions.md`
+- Run `make lint && go build ./internal/...` after changes (if Go code)
+- Run relevant tests — `go test ./internal/...`
 
-### 6. Commit, push, and open PR
+### 6. Mandatory verification (BEFORE pushing)
+
+After implementing the work and BEFORE pushing or opening a PR:
+
+1. Run `git diff origin/main...HEAD --stat` to see the actual files changed
+2. Compare against the plan you proposed — every claimed file change must appear in the diff
+3. If any claimed change is MISSING from the diff (e.g. you said you deleted a file but `git status` shows it still exists), STOP and report the discrepancy — do not push
+
+If verification fails, your final message MUST say so explicitly. Do not summarize work as "done" if the diff doesn't match the plan.
+
+### 7. Commit, push, and open PR
 
 1. Stage relevant files (never stage secrets, binaries, or generated code)
-2. Commit with a clear message (no AI attribution)
+2. Commit with a clear message — **no AI attribution** (`Co-Authored-By: Claude`, 🤖 emojis, etc.)
 3. Push: `git push -u origin {branch_name}`
 4. Create PR:
+
    ```bash
    gh pr create --repo Shisa-Fosho/services \
      --title "{issue title}" \
@@ -83,20 +83,26 @@ git checkout -b {issue_number}-{short-kebab-description}
    ## Summary
    {bullet points of what changed}
 
+   ## Verified diff stat
+   \`\`\`
+   {paste of git diff --stat output}
+   \`\`\`
+
    ## Test Plan
    {how to verify}"
    ```
 
-### 7. Clean up and report
+### 8. Post-push verification
 
-Remove the worktree:
+5. Run `gh pr diff <PR#> --repo Shisa-Fosho/services | head -200` to confirm GitHub shows the same diff you committed locally
+6. Run `gh pr view <PR#> --json baseRefOid,headRefOid` and confirm `baseRefOid` matches the current `origin/main` SHA
 
-```bash
-cd /
-git -C <original_repo_path> worktree remove "$WORKTREE_DIR"
-```
+### 9. Final report
 
-Return:
+Return a message containing:
+
 - Issue URL
 - PR URL
-- Summary of what was implemented
+- Branch name
+- A copy of the `git diff --stat` output proving the changes are real
+- Verification result (all passed, or which step failed and why)
