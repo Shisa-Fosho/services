@@ -148,6 +148,9 @@ docs/                       # Documentation
 
 **IMPORTANT: Always read `docs/conventions.md` before writing or reviewing code.** It is the authoritative style guide.
 
+### No Speculative Code
+Only write code that is called within the current issue's scope. Do not ship unused functions, helpers, or "placeholder" code for future issues. If the next issue needs something, it will be built then — Go's compiler will catch missing functions immediately. Document any expected prerequisites in the issue description instead.
+
 ### Idempotency
 All write operations MUST be idempotent. Key source depends on operation:
 - Orders: EIP-712 signature hash (cryptographic, natural key)
@@ -329,4 +332,3 @@ ABIs consumed from the `contracts` repo via copy. No import dependency.
 | NATS | 8222 | NATS monitoring |
 | Prometheus | 9090 | Metrics collection |
 | Grafana | 3000 | Dashboards |
-| Anvil | 8545 | Local Polygon fork |
