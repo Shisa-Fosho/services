@@ -20,14 +20,14 @@ func TestAuthenticate_ValidToken(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer "+token)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	recorder := httptest.NewRecorder()
 
-	handler.ServeHTTP(w, r)
+	handler.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusOK)
+	if recorder.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
 	if gotAddr != addr {
 		t.Errorf("address = %q, want %q", gotAddr, addr)
@@ -42,13 +42,13 @@ func TestAuthenticate_MissingHeader(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	recorder := httptest.NewRecorder()
 
-	handler.ServeHTTP(w, r)
+	handler.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -60,14 +60,14 @@ func TestAuthenticate_MalformedHeader(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "NotBearer some-token")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "NotBearer some-token")
+	recorder := httptest.NewRecorder()
 
-	handler.ServeHTTP(w, r)
+	handler.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -79,16 +79,16 @@ func TestAuthenticate_ExpiredToken(t *testing.T) {
 		t.Error("handler should not be called")
 	}))
 
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Authorization", "Bearer expired.jwt.token")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer expired.jwt.token")
+	recorder := httptest.NewRecorder()
 
-	handler.ServeHTTP(w, r)
+	handler.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
-	if !strings.Contains(w.Body.String(), "invalid token") {
-		t.Errorf("body = %q, want 'invalid token'", w.Body.String())
+	if !strings.Contains(recorder.Body.String(), "invalid token") {
+		t.Errorf("body = %q, want 'invalid token'", recorder.Body.String())
 	}
 }

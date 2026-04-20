@@ -73,19 +73,19 @@ func NewJWTManager(cfg JWTConfig) (*JWTManager, error) {
 }
 
 // IssueAccessToken creates a signed access token for the given address.
-func (m *JWTManager) IssueAccessToken(address string) (string, error) {
+func (manager *JWTManager) IssueAccessToken(address string) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
-			Issuer:    m.cfg.Issuer,
+			Issuer:    manager.cfg.Issuer,
 			Subject:   address,
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.Add(m.cfg.AccessTTL)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(manager.cfg.AccessTTL)),
 		},
 		Kind: TokenAccess,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(m.cfg.AccessSecret)
+	signed, err := token.SignedString(manager.cfg.AccessSecret)
 	if err != nil {
 		return "", fmt.Errorf("signing access token: %w", err)
 	}
@@ -95,9 +95,9 @@ func (m *JWTManager) IssueAccessToken(address string) (string, error) {
 // IssueRefreshToken creates a signed refresh token for the given address.
 // Returns (tokenString, jti, expiresAt, error) so the caller can persist
 // the JTI for rotation tracking.
-func (m *JWTManager) IssueRefreshToken(address string) (string, string, time.Time, error) {
+func (manager *JWTManager) IssueRefreshToken(address string) (string, string, time.Time, error) {
 	now := time.Now()
-	expiresAt := now.Add(m.cfg.RefreshTTL)
+	expiresAt := now.Add(manager.cfg.RefreshTTL)
 	jti, err := randomHex(16)
 	if err != nil {
 		return "", "", time.Time{}, fmt.Errorf("generating JTI: %w", err)
@@ -106,7 +106,7 @@ func (m *JWTManager) IssueRefreshToken(address string) (string, string, time.Tim
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			Issuer:    m.cfg.Issuer,
+			Issuer:    manager.cfg.Issuer,
 			Subject:   address,
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
@@ -114,7 +114,7 @@ func (m *JWTManager) IssueRefreshToken(address string) (string, string, time.Tim
 		Kind: TokenRefresh,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, err := token.SignedString(m.cfg.RefreshSecret)
+	signed, err := token.SignedString(manager.cfg.RefreshSecret)
 	if err != nil {
 		return "", "", time.Time{}, fmt.Errorf("signing refresh token: %w", err)
 	}
@@ -123,21 +123,21 @@ func (m *JWTManager) IssueRefreshToken(address string) (string, string, time.Tim
 
 // ValidateAccessToken parses and validates an access token string.
 // Returns the Claims or an error. Rejects refresh tokens.
-func (m *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
-	return m.validateToken(tokenStr, m.cfg.AccessSecret, TokenAccess)
+func (manager *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
+	return manager.validateToken(tokenStr, manager.cfg.AccessSecret, TokenAccess)
 }
 
 // ValidateRefreshToken parses and validates a refresh token string.
 // Returns the Claims or an error. Rejects access tokens.
-func (m *JWTManager) ValidateRefreshToken(tokenStr string) (*Claims, error) {
-	return m.validateToken(tokenStr, m.cfg.RefreshSecret, TokenRefresh)
+func (manager *JWTManager) ValidateRefreshToken(tokenStr string) (*Claims, error) {
+	return manager.validateToken(tokenStr, manager.cfg.RefreshSecret, TokenRefresh)
 }
 
-func (m *JWTManager) validateToken(tokenStr string, secret []byte, expectedKind TokenKind) (*Claims, error) {
+func (manager *JWTManager) validateToken(tokenStr string, secret []byte, expectedKind TokenKind) (*Claims, error) {
 	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+	token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return secret, nil
 	})
@@ -153,12 +153,12 @@ func (m *JWTManager) validateToken(tokenStr string, secret []byte, expectedKind 
 	return claims, nil
 }
 
-// randomHex generates n cryptographically random bytes and returns them
+// randomHex generates size cryptographically random bytes and returns them
 // as a hex-encoded string.
-func randomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
+func randomHex(size int) (string, error) {
+	buf := make([]byte, size)
+	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(b), nil
+	return hex.EncodeToString(buf), nil
 }

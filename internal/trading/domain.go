@@ -26,8 +26,8 @@ const (
 	SideSell Side = 1
 )
 
-func (s Side) String() string {
-	switch s {
+func (side Side) String() string {
+	switch side {
 	case SideBuy:
 		return "BUY"
 	case SideSell:
@@ -38,8 +38,8 @@ func (s Side) String() string {
 }
 
 // IsValid returns true if the side is BUY or SELL.
-func (s Side) IsValid() bool {
-	return s == SideBuy || s == SideSell
+func (side Side) IsValid() bool {
+	return side == SideBuy || side == SideSell
 }
 
 // OrderStatus represents the lifecycle state of an order.
@@ -52,8 +52,8 @@ const (
 	OrderStatusCancelled       OrderStatus = 3
 )
 
-func (s OrderStatus) String() string {
-	switch s {
+func (status OrderStatus) String() string {
+	switch status {
 	case OrderStatusOpen:
 		return "OPEN"
 	case OrderStatusFilled:
@@ -68,8 +68,8 @@ func (s OrderStatus) String() string {
 }
 
 // IsValid returns true if the status is a known value.
-func (s OrderStatus) IsValid() bool {
-	return s >= OrderStatusOpen && s <= OrderStatusCancelled
+func (status OrderStatus) IsValid() bool {
+	return status >= OrderStatusOpen && status <= OrderStatusCancelled
 }
 
 // OrderType represents the execution strategy of an order.
@@ -80,8 +80,8 @@ const (
 	OrderTypeFOK OrderType = 1 // Fill-Or-Kill: must fill entirely on arrival or be rejected.
 )
 
-func (t OrderType) String() string {
-	switch t {
+func (orderType OrderType) String() string {
+	switch orderType {
 	case OrderTypeGTC:
 		return "GTC"
 	case OrderTypeFOK:
@@ -92,8 +92,8 @@ func (t OrderType) String() string {
 }
 
 // IsValid returns true if the order type is GTC or FOK.
-func (t OrderType) IsValid() bool {
-	return t == OrderTypeGTC || t == OrderTypeFOK
+func (orderType OrderType) IsValid() bool {
+	return orderType == OrderTypeGTC || orderType == OrderTypeFOK
 }
 
 // Order represents a signed order submitted to the CLOB.
@@ -123,12 +123,12 @@ type Order struct {
 // OrderPrice computes the price in integer cents from maker/taker amounts.
 // Price = MakerAmount / (MakerAmount + TakerAmount) * 100.
 // Returns 0 if total is zero (invalid order).
-func OrderPrice(o *Order) int64 {
-	total := o.MakerAmount + o.TakerAmount
+func OrderPrice(order *Order) int64 {
+	total := order.MakerAmount + order.TakerAmount
 	if total == 0 {
 		return 0
 	}
-	return (o.MakerAmount * 100) / total
+	return (order.MakerAmount * 100) / total
 }
 
 // Trade represents a matched trade between two orders.
@@ -159,8 +159,8 @@ type Balance struct {
 }
 
 // Total returns the sum of available and reserved funds.
-func (b Balance) Total() int64 {
-	return b.Available + b.Reserved
+func (balance Balance) Total() int64 {
+	return balance.Available + balance.Reserved
 }
 
 // TokenPair represents the YES and NO token IDs for a single market.

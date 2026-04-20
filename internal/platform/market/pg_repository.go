@@ -24,8 +24,8 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 
 // CreateCategory persists a new category. Returns ErrDuplicateSlug if the slug
 // already exists.
-func (r *PGRepository) CreateCategory(ctx context.Context, cat *Category) error {
-	_, err := r.pool.Exec(ctx,
+func (repo *PGRepository) CreateCategory(ctx context.Context, cat *Category) error {
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO categories (name, slug) VALUES ($1, $2)`,
 		cat.Name, cat.Slug,
 	)
@@ -39,8 +39,8 @@ func (r *PGRepository) CreateCategory(ctx context.Context, cat *Category) error 
 }
 
 // GetCategory retrieves a category by ID. Returns ErrNotFound if not found.
-func (r *PGRepository) GetCategory(ctx context.Context, id string) (*Category, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM categories WHERE id = $1`, id)
+func (repo *PGRepository) GetCategory(ctx context.Context, id string) (*Category, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM categories WHERE id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("getting category %s: %w", id, err)
 	}
@@ -55,8 +55,8 @@ func (r *PGRepository) GetCategory(ctx context.Context, id string) (*Category, e
 }
 
 // ListCategories returns all categories ordered by name.
-func (r *PGRepository) ListCategories(ctx context.Context) ([]*Category, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM categories ORDER BY name`)
+func (repo *PGRepository) ListCategories(ctx context.Context) ([]*Category, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM categories ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listing categories: %w", err)
 	}
@@ -70,11 +70,11 @@ func (r *PGRepository) ListCategories(ctx context.Context) ([]*Category, error) 
 // CreateEvent persists a new event. Validates input via ValidateEvent before
 // persisting. Returns ErrInvalidEvent for shape violations, ErrDuplicateSlug
 // if the slug already exists.
-func (r *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
+func (repo *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
 	if err := ValidateEvent(event, time.Now()); err != nil {
 		return fmt.Errorf("creating event: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO events (
 			slug, title, description, category_id, event_type,
 			resolution_config, status, end_date, featured, featured_sort_order
@@ -93,8 +93,8 @@ func (r *PGRepository) CreateEvent(ctx context.Context, event *Event) error {
 }
 
 // GetEvent retrieves an event by ID. Returns ErrNotFound if not found.
-func (r *PGRepository) GetEvent(ctx context.Context, id string) (*Event, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM events WHERE id = $1`, id)
+func (repo *PGRepository) GetEvent(ctx context.Context, id string) (*Event, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM events WHERE id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("getting event %s: %w", id, err)
 	}
@@ -109,8 +109,8 @@ func (r *PGRepository) GetEvent(ctx context.Context, id string) (*Event, error) 
 }
 
 // GetEventBySlug retrieves an event by slug. Returns ErrNotFound if not found.
-func (r *PGRepository) GetEventBySlug(ctx context.Context, slug string) (*Event, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM events WHERE slug = $1`, slug)
+func (repo *PGRepository) GetEventBySlug(ctx context.Context, slug string) (*Event, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM events WHERE slug = $1`, slug)
 	if err != nil {
 		return nil, fmt.Errorf("getting event by slug %q: %w", slug, err)
 	}
@@ -125,16 +125,16 @@ func (r *PGRepository) GetEventBySlug(ctx context.Context, slug string) (*Event,
 }
 
 // ListEvents returns events optionally filtered by statuses.
-func (r *PGRepository) ListEvents(ctx context.Context, statuses []Status) ([]*Event, error) {
+func (repo *PGRepository) ListEvents(ctx context.Context, statuses []Status) ([]*Event, error) {
 	var rows pgx.Rows
 	var err error
 
 	if len(statuses) == 0 {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM events ORDER BY created_at DESC`,
 		)
 	} else {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM events WHERE status = ANY($1) ORDER BY created_at DESC`,
 			statusSlice(statuses),
 		)
@@ -152,11 +152,11 @@ func (r *PGRepository) ListEvents(ctx context.Context, statuses []Status) ([]*Ev
 // CreateMarket persists a new market. Validates input via ValidateMarket
 // before persisting. Returns ErrInvalidMarket for shape violations,
 // ErrDuplicateSlug if the slug already exists.
-func (r *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
+func (repo *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
 	if err := ValidateMarket(market); err != nil {
 		return fmt.Errorf("creating market: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO markets (
 			slug, event_id, question, outcome_yes_label, outcome_no_label,
 			token_id_yes, token_id_no, condition_id, status, outcome,
@@ -178,8 +178,8 @@ func (r *PGRepository) CreateMarket(ctx context.Context, market *Market) error {
 }
 
 // GetMarket retrieves a market by ID. Returns ErrNotFound if not found.
-func (r *PGRepository) GetMarket(ctx context.Context, id string) (*Market, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM markets WHERE id = $1`, id)
+func (repo *PGRepository) GetMarket(ctx context.Context, id string) (*Market, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM markets WHERE id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("getting market %s: %w", id, err)
 	}
@@ -194,8 +194,8 @@ func (r *PGRepository) GetMarket(ctx context.Context, id string) (*Market, error
 }
 
 // GetMarketBySlug retrieves a market by slug. Returns ErrNotFound if not found.
-func (r *PGRepository) GetMarketBySlug(ctx context.Context, slug string) (*Market, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM markets WHERE slug = $1`, slug)
+func (repo *PGRepository) GetMarketBySlug(ctx context.Context, slug string) (*Market, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM markets WHERE slug = $1`, slug)
 	if err != nil {
 		return nil, fmt.Errorf("getting market by slug %q: %w", slug, err)
 	}
@@ -210,16 +210,16 @@ func (r *PGRepository) GetMarketBySlug(ctx context.Context, slug string) (*Marke
 }
 
 // ListMarkets returns markets optionally filtered by statuses.
-func (r *PGRepository) ListMarkets(ctx context.Context, statuses []Status) ([]*Market, error) {
+func (repo *PGRepository) ListMarkets(ctx context.Context, statuses []Status) ([]*Market, error) {
 	var rows pgx.Rows
 	var err error
 
 	if len(statuses) == 0 {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM markets ORDER BY created_at DESC`,
 		)
 	} else {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM markets WHERE status = ANY($1) ORDER BY created_at DESC`,
 			statusSlice(statuses),
 		)
@@ -235,8 +235,8 @@ func (r *PGRepository) ListMarkets(ctx context.Context, statuses []Status) ([]*M
 }
 
 // ListMarketsByEvent returns all markets belonging to an event.
-func (r *PGRepository) ListMarketsByEvent(ctx context.Context, eventID string) ([]*Market, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) ListMarketsByEvent(ctx context.Context, eventID string) ([]*Market, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM markets WHERE event_id = $1 ORDER BY created_at DESC`,
 		eventID,
 	)
@@ -252,8 +252,8 @@ func (r *PGRepository) ListMarketsByEvent(ctx context.Context, eventID string) (
 
 // UpdateStatus changes the status of a market. Validates the transition
 // before executing the update.
-func (r *PGRepository) UpdateStatus(ctx context.Context, id string, status Status) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status Status) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("updating market status: beginning transaction: %w", err)
 	}
@@ -289,8 +289,8 @@ func (r *PGRepository) UpdateStatus(ctx context.Context, id string, status Statu
 }
 
 // UpdateMarketPrices updates the current prices, volume, and open interest.
-func (r *PGRepository) UpdateMarketPrices(ctx context.Context, id string, priceYes, priceNo, volume, openInterest int64) error {
-	tag, err := r.pool.Exec(ctx,
+func (repo *PGRepository) UpdateMarketPrices(ctx context.Context, id string, priceYes, priceNo, volume, openInterest int64) error {
+	tag, err := repo.pool.Exec(ctx,
 		`UPDATE markets SET price_yes = $1, price_no = $2, volume = $3,
 		 open_interest = $4, updated_at = now() WHERE id = $5`,
 		priceYes, priceNo, volume, openInterest, id,
@@ -307,8 +307,8 @@ func (r *PGRepository) UpdateMarketPrices(ctx context.Context, id string, priceY
 // statusSlice converts Status values to int16 for pgx ANY() binding.
 func statusSlice(statuses []Status) []int16 {
 	out := make([]int16, len(statuses))
-	for i, s := range statuses {
-		out[i] = int16(s)
+	for idx, status := range statuses {
+		out[idx] = int16(status)
 	}
 	return out
 }

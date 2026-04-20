@@ -91,21 +91,21 @@ func NewLimiter(cfg Config) (*Limiter, error) {
 	profiles := make(map[string]*Profile, len(cfg.Profiles))
 	ipEntries := make(map[string]map[string]*entry, len(cfg.Profiles))
 	userEntries := make(map[string]map[string]*entry, len(cfg.Profiles))
-	for i := range cfg.Profiles {
-		p := cfg.Profiles[i]
-		if p.Name == "" {
+	for idx := range cfg.Profiles {
+		profile := cfg.Profiles[idx]
+		if profile.Name == "" {
 			return nil, fmt.Errorf("ratelimit: profile with empty name")
 		}
-		if _, dup := profiles[p.Name]; dup {
-			return nil, fmt.Errorf("ratelimit: duplicate profile name %q", p.Name)
+		if _, dup := profiles[profile.Name]; dup {
+			return nil, fmt.Errorf("ratelimit: duplicate profile name %q", profile.Name)
 		}
-		if p.Rate <= 0 || p.Burst <= 0 {
-			return nil, fmt.Errorf("ratelimit: profile %q has non-positive Rate/Burst", p.Name)
+		if profile.Rate <= 0 || profile.Burst <= 0 {
+			return nil, fmt.Errorf("ratelimit: profile %q has non-positive Rate/Burst", profile.Name)
 		}
-		pCopy := p
-		profiles[p.Name] = &pCopy
-		ipEntries[p.Name] = make(map[string]*entry)
-		userEntries[p.Name] = make(map[string]*entry)
+		profileCopy := profile
+		profiles[profile.Name] = &profileCopy
+		ipEntries[profile.Name] = make(map[string]*entry)
+		userEntries[profile.Name] = make(map[string]*entry)
 	}
 	clock := cfg.Clock
 	if clock == nil {
@@ -136,41 +136,41 @@ func NewLimiter(cfg Config) (*Limiter, error) {
 }
 
 // Profile returns the named profile, or (nil, false) if unknown.
-func (l *Limiter) Profile(name string) (*Profile, bool) {
-	p, ok := l.profiles[name]
-	return p, ok
+func (limiter *Limiter) Profile(name string) (*Profile, bool) {
+	profile, ok := limiter.profiles[name]
+	return profile, ok
 }
 
-// AllowIP consumes one token from the per-IP bucket for p.
+// AllowIP consumes one token from the per-IP bucket for profile.
 // Returns (true, 0) on allow, (false, retryAfter) on reject.
-func (l *Limiter) AllowIP(p *Profile, ip string) (bool, time.Duration) {
-	return l.allow(l.ipEntries[p.Name], p, ip, keyTypeIP)
+func (limiter *Limiter) AllowIP(profile *Profile, ip string) (bool, time.Duration) {
+	return limiter.allow(limiter.ipEntries[profile.Name], profile, ip, keyTypeIP)
 }
 
-// AllowUser consumes one token from the per-user bucket for p.
-func (l *Limiter) AllowUser(p *Profile, addr string) (bool, time.Duration) {
-	return l.allow(l.userEntries[p.Name], p, addr, keyTypeUser)
+// AllowUser consumes one token from the per-user bucket for profile.
+func (limiter *Limiter) AllowUser(profile *Profile, addr string) (bool, time.Duration) {
+	return limiter.allow(limiter.userEntries[profile.Name], profile, addr, keyTypeUser)
 }
 
-func (l *Limiter) allow(m map[string]*entry, p *Profile, key, keyType string) (bool, time.Duration) {
-	now := l.clock()
-	l.mu.RLock()
-	e, ok := m[key]
-	l.mu.RUnlock()
+func (limiter *Limiter) allow(entries map[string]*entry, profile *Profile, key, keyType string) (bool, time.Duration) {
+	now := limiter.clock()
+	limiter.mu.RLock()
+	bucket, ok := entries[key]
+	limiter.mu.RUnlock()
 	if !ok {
-		l.mu.Lock()
-		if e, ok = m[key]; !ok {
-			if p.MaxEntries > 0 && len(m) >= p.MaxEntries {
-				l.evictOne(m, p.Name, keyType)
+		limiter.mu.Lock()
+		if bucket, ok = entries[key]; !ok {
+			if profile.MaxEntries > 0 && len(entries) >= profile.MaxEntries {
+				limiter.evictOne(entries, profile.Name, keyType)
 			}
-			e = &entry{lim: rate.NewLimiter(p.Rate, p.Burst)}
-			m[key] = e
+			bucket = &entry{lim: rate.NewLimiter(profile.Rate, profile.Burst)}
+			entries[key] = bucket
 		}
-		l.mu.Unlock()
+		limiter.mu.Unlock()
 	}
-	e.lastSeen.Store(now.UnixNano())
-	res := e.lim.ReserveN(now, 1)
-	delay := res.DelayFrom(now)
+	bucket.lastSeen.Store(now.UnixNano())
+	reservation := bucket.lim.ReserveN(now, 1)
+	delay := reservation.DelayFrom(now)
 	if delay == 0 {
 		return true, 0
 	}
@@ -178,69 +178,69 @@ func (l *Limiter) allow(m map[string]*entry, p *Profile, key, keyType string) (b
 	// for it. CancelAt must receive the same clock we used for ReserveN;
 	// res.Cancel() internally uses time.Now() and would corrupt state under
 	// an injected clock.
-	res.CancelAt(now)
+	reservation.CancelAt(now)
 	return false, delay
 }
 
 // IsLockedOut reports whether ip is currently locked out and the remaining time.
-func (l *Limiter) IsLockedOut(ip string) (bool, time.Duration) {
-	now := l.clock()
-	l.mu.RLock()
-	ls, ok := l.lockouts[ip]
-	l.mu.RUnlock()
+func (limiter *Limiter) IsLockedOut(ip string) (bool, time.Duration) {
+	now := limiter.clock()
+	limiter.mu.RLock()
+	state, ok := limiter.lockouts[ip]
+	limiter.mu.RUnlock()
 	if !ok {
 		return false, 0
 	}
-	if !now.Before(ls.until) {
+	if !now.Before(state.until) {
 		return false, 0
 	}
-	return true, ls.until.Sub(now)
+	return true, state.until.Sub(now)
 }
 
 // RecordAuthFailure bumps the failure counter for ip. When MaxFailures occur
-// within failureTTL, a lockout of p.LockoutDuration begins. No-op if p
-// disables lockout.
+// within failureTTL, a lockout of profile.LockoutDuration begins. No-op if
+// profile disables lockout.
 //
 // Sliding-window semantics: a failure older than failureTTL resets the count,
 // preventing ancient probes from contributing to a future lockout.
-func (l *Limiter) RecordAuthFailure(ip string, p *Profile) {
-	if p.MaxFailures <= 0 || p.LockoutDuration <= 0 {
+func (limiter *Limiter) RecordAuthFailure(ip string, profile *Profile) {
+	if profile.MaxFailures <= 0 || profile.LockoutDuration <= 0 {
 		return
 	}
-	now := l.clock()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if ls, already := l.lockouts[ip]; already && now.Before(ls.until) {
+	now := limiter.clock()
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if state, already := limiter.lockouts[ip]; already && now.Before(state.until) {
 		return
 	}
 
-	fe := l.failures[ip]
-	if now.Sub(fe.lastFailure) > failureTTL {
-		fe.count = 0
+	failure := limiter.failures[ip]
+	if now.Sub(failure.lastFailure) > failureTTL {
+		failure.count = 0
 	}
-	fe.count++
-	fe.lastFailure = now
+	failure.count++
+	failure.lastFailure = now
 
-	if fe.count >= p.MaxFailures {
-		if len(l.lockouts) >= l.lockoutsMax {
-			l.evictOneLockout()
+	if failure.count >= profile.MaxFailures {
+		if len(limiter.lockouts) >= limiter.lockoutsMax {
+			limiter.evictOneLockout()
 		}
-		l.lockouts[ip] = lockoutState{until: now.Add(p.LockoutDuration)}
-		delete(l.failures, ip)
-		l.metrics.RateLimitLockoutTotal.Inc()
-		l.logger.Warn("rate limit lockout",
+		limiter.lockouts[ip] = lockoutState{until: now.Add(profile.LockoutDuration)}
+		delete(limiter.failures, ip)
+		limiter.metrics.RateLimitLockoutTotal.Inc()
+		limiter.logger.Warn("rate limit lockout",
 			zap.String("ip", ip),
-			zap.String("profile", p.Name),
-			zap.Duration("lockout", p.LockoutDuration),
+			zap.String("profile", profile.Name),
+			zap.Duration("lockout", profile.LockoutDuration),
 		)
 		return
 	}
-	l.failures[ip] = fe
+	limiter.failures[ip] = failure
 }
 
 // Start runs the sweeper until ctx is cancelled. Intended to be launched in
-// a goroutine: `go l.Start(ctx, interval)`.
-func (l *Limiter) Start(ctx context.Context, sweepInterval time.Duration) {
+// a goroutine: `go limiter.Start(ctx, interval)`.
+func (limiter *Limiter) Start(ctx context.Context, sweepInterval time.Duration) {
 	if sweepInterval <= 0 {
 		sweepInterval = time.Minute
 	}
@@ -251,7 +251,7 @@ func (l *Limiter) Start(ctx context.Context, sweepInterval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			l.sweep()
+			limiter.sweep()
 		}
 	}
 }
@@ -259,15 +259,15 @@ func (l *Limiter) Start(ctx context.Context, sweepInterval time.Duration) {
 // staleCutoff is 2× the longest token-refill window across profiles.
 // Entries untouched past this age are safe to evict — any bucket they
 // backed has fully refilled, so recreating on next request is free.
-func (l *Limiter) staleCutoff() time.Duration {
+func (limiter *Limiter) staleCutoff() time.Duration {
 	var longest time.Duration
-	for _, p := range l.profiles {
-		if p.Rate <= 0 {
+	for _, profile := range limiter.profiles {
+		if profile.Rate <= 0 {
 			continue
 		}
-		w := time.Duration(float64(time.Second) * float64(p.Burst) / float64(p.Rate))
-		if w > longest {
-			longest = w
+		window := time.Duration(float64(time.Second) * float64(profile.Burst) / float64(profile.Rate))
+		if window > longest {
+			longest = window
 		}
 	}
 	if longest == 0 {
@@ -281,97 +281,97 @@ type staleKey struct {
 	key     string
 }
 
-func (l *Limiter) sweep() {
-	start := l.clock()
-	cutoffNanos := start.Add(-l.staleCutoff()).UnixNano()
+func (limiter *Limiter) sweep() {
+	start := limiter.clock()
+	cutoffNanos := start.Add(-limiter.staleCutoff()).UnixNano()
 
 	var ipStale, userStale []staleKey
 	var expiredLockouts, expiredFailures []string
 
-	l.mu.RLock()
-	for prof, m := range l.ipEntries {
-		for k, e := range m {
-			if e.lastSeen.Load() < cutoffNanos {
-				ipStale = append(ipStale, staleKey{prof, k})
+	limiter.mu.RLock()
+	for profileName, entries := range limiter.ipEntries {
+		for key, bucket := range entries {
+			if bucket.lastSeen.Load() < cutoffNanos {
+				ipStale = append(ipStale, staleKey{profileName, key})
 			}
 		}
 	}
-	for prof, m := range l.userEntries {
-		for k, e := range m {
-			if e.lastSeen.Load() < cutoffNanos {
-				userStale = append(userStale, staleKey{prof, k})
+	for profileName, entries := range limiter.userEntries {
+		for key, bucket := range entries {
+			if bucket.lastSeen.Load() < cutoffNanos {
+				userStale = append(userStale, staleKey{profileName, key})
 			}
 		}
 	}
-	for k, ls := range l.lockouts {
-		if !start.Before(ls.until) {
-			expiredLockouts = append(expiredLockouts, k)
+	for key, state := range limiter.lockouts {
+		if !start.Before(state.until) {
+			expiredLockouts = append(expiredLockouts, key)
 		}
 	}
 	failureCutoff := start.Add(-failureTTL)
-	for k, fe := range l.failures {
-		if fe.lastFailure.Before(failureCutoff) {
-			expiredFailures = append(expiredFailures, k)
+	for key, failure := range limiter.failures {
+		if failure.lastFailure.Before(failureCutoff) {
+			expiredFailures = append(expiredFailures, key)
 		}
 	}
-	l.mu.RUnlock()
+	limiter.mu.RUnlock()
 
-	l.deleteStale(ipStale, l.ipEntries, keyTypeIP)
-	l.deleteStale(userStale, l.userEntries, keyTypeUser)
+	limiter.deleteStale(ipStale, limiter.ipEntries, keyTypeIP)
+	limiter.deleteStale(userStale, limiter.userEntries, keyTypeUser)
 
 	if len(expiredLockouts) > 0 || len(expiredFailures) > 0 {
-		l.mu.Lock()
-		now := l.clock()
-		for _, k := range expiredLockouts {
-			if ls, ok := l.lockouts[k]; ok && !now.Before(ls.until) {
-				delete(l.lockouts, k)
+		limiter.mu.Lock()
+		now := limiter.clock()
+		for _, key := range expiredLockouts {
+			if state, ok := limiter.lockouts[key]; ok && !now.Before(state.until) {
+				delete(limiter.lockouts, key)
 			}
 		}
 		failureCutoff := now.Add(-failureTTL)
-		for _, k := range expiredFailures {
-			if fe, ok := l.failures[k]; ok && fe.lastFailure.Before(failureCutoff) {
-				delete(l.failures, k)
+		for _, key := range expiredFailures {
+			if failure, ok := limiter.failures[key]; ok && failure.lastFailure.Before(failureCutoff) {
+				delete(limiter.failures, key)
 			}
 		}
-		l.mu.Unlock()
+		limiter.mu.Unlock()
 	}
 
-	l.metrics.RateLimitSweepDurationSeconds.Observe(time.Since(start).Seconds())
+	limiter.metrics.RateLimitSweepDurationSeconds.Observe(time.Since(start).Seconds())
 }
 
-// deleteStale evicts the listed entries in batches of l.sweepBatch, releasing
+// deleteStale evicts the listed entries in batches of limiter.sweepBatch, releasing
 // the write lock between batches so concurrent readers can interleave.
-func (l *Limiter) deleteStale(keys []staleKey, target map[string]map[string]*entry, keyType string) {
+func (limiter *Limiter) deleteStale(keys []staleKey, target map[string]map[string]*entry, keyType string) {
 	if len(keys) == 0 {
 		return
 	}
-	for i := 0; i < len(keys); i += l.sweepBatch {
-		end := min(i+l.sweepBatch, len(keys))
-		batch := keys[i:end]
-		l.mu.Lock()
-		for _, sk := range batch {
-			delete(target[sk.profile], sk.key)
+	for idx := 0; idx < len(keys); idx += limiter.sweepBatch {
+		end := min(idx+limiter.sweepBatch, len(keys))
+		batch := keys[idx:end]
+		limiter.mu.Lock()
+		for _, stale := range batch {
+			delete(target[stale.profile], stale.key)
 		}
-		l.mu.Unlock()
-		for _, sk := range batch {
-			l.metrics.RateLimitEvictedTotal.WithLabelValues(sk.profile, keyType, evictReasonSweep).Inc()
+		limiter.mu.Unlock()
+		for _, stale := range batch {
+			limiter.metrics.RateLimitEvictedTotal.WithLabelValues(stale.profile, keyType, evictReasonSweep).Inc()
 		}
 	}
 }
 
 // evictOne picks a victim via sample-K LRU: sample up to sampleSize random
-// entries from m (Go's map iteration is randomized, so ranging gives us that),
+// entries from entries (Go's map iteration is randomized, so ranging gives us that),
 // and evict the one with the oldest lastSeen.
-// Caller MUST hold l.mu as writer.
-func (l *Limiter) evictOne(m map[string]*entry, profile, keyType string) {
+// Caller MUST hold limiter.mu as writer.
+func (limiter *Limiter) evictOne(entries map[string]*entry, profile, keyType string) {
 	var victim string
 	var oldest int64
 	sampled := 0
-	for k, e := range m {
-		ls := e.lastSeen.Load()
-		if sampled == 0 || ls < oldest {
-			victim = k
-			oldest = ls
+	for key, bucket := range entries {
+		lastSeen := bucket.lastSeen.Load()
+		if sampled == 0 || lastSeen < oldest {
+			victim = key
+			oldest = lastSeen
 		}
 		sampled++
 		if sampled >= sampleSize {
@@ -379,23 +379,23 @@ func (l *Limiter) evictOne(m map[string]*entry, profile, keyType string) {
 		}
 	}
 	if victim != "" {
-		delete(m, victim)
-		l.metrics.RateLimitEvictedTotal.WithLabelValues(profile, keyType, evictReasonCap).Inc()
+		delete(entries, victim)
+		limiter.metrics.RateLimitEvictedTotal.WithLabelValues(profile, keyType, evictReasonCap).Inc()
 	}
 }
 
 // evictOneLockout picks the lockout with the soonest-expiring `until` from a
 // sample — it was about to decay anyway. Random eviction would forgive an
 // active attacker with a lot of lockout time left.
-// Caller MUST hold l.mu as writer.
-func (l *Limiter) evictOneLockout() {
+// Caller MUST hold limiter.mu as writer.
+func (limiter *Limiter) evictOneLockout() {
 	var victim string
 	var soonest time.Time
 	sampled := 0
-	for k, ls := range l.lockouts {
-		if sampled == 0 || ls.until.Before(soonest) {
-			victim = k
-			soonest = ls.until
+	for key, state := range limiter.lockouts {
+		if sampled == 0 || state.until.Before(soonest) {
+			victim = key
+			soonest = state.until
 		}
 		sampled++
 		if sampled >= sampleSize {
@@ -403,6 +403,6 @@ func (l *Limiter) evictOneLockout() {
 		}
 	}
 	if victim != "" {
-		delete(l.lockouts, victim)
+		delete(limiter.lockouts, victim)
 	}
 }

@@ -30,35 +30,35 @@ func newFakeRepo() *fakeRepo {
 	return &fakeRepo{apiKeys: make(map[string]*APIKey)}
 }
 
-func (r *fakeRepo) UpsertAPIKey(_ context.Context, key *APIKey) error {
-	r.apiKeys[key.KeyHash] = key
+func (repo *fakeRepo) UpsertAPIKey(_ context.Context, key *APIKey) error {
+	repo.apiKeys[key.KeyHash] = key
 	return nil
 }
 
-func (r *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*APIKey, error) {
-	k, ok := r.apiKeys[keyHash]
-	if !ok || k.Revoked || k.ExpiresAt.Before(time.Now()) {
+func (repo *fakeRepo) GetAPIKeyByHash(_ context.Context, keyHash string) (*APIKey, error) {
+	key, ok := repo.apiKeys[keyHash]
+	if !ok || key.Revoked || key.ExpiresAt.Before(time.Now()) {
 		return nil, data.ErrNotFound
 	}
-	return k, nil
+	return key, nil
 }
 
-func (r *fakeRepo) GetAPIKeysByUser(_ context.Context, userAddress string) ([]*APIKey, error) {
+func (repo *fakeRepo) GetAPIKeysByUser(_ context.Context, userAddress string) ([]*APIKey, error) {
 	var result []*APIKey
-	for _, k := range r.apiKeys {
-		if k.UserAddress == userAddress && !k.Revoked {
-			result = append(result, k)
+	for _, key := range repo.apiKeys {
+		if key.UserAddress == userAddress && !key.Revoked {
+			result = append(result, key)
 		}
 	}
 	return result, nil
 }
 
-func (r *fakeRepo) RevokeAPIKey(_ context.Context, keyHash string, userAddress string) error {
-	k, ok := r.apiKeys[keyHash]
-	if !ok || k.UserAddress != userAddress || k.Revoked {
+func (repo *fakeRepo) RevokeAPIKey(_ context.Context, keyHash string, userAddress string) error {
+	key, ok := repo.apiKeys[keyHash]
+	if !ok || key.UserAddress != userAddress || key.Revoked {
 		return data.ErrNotFound
 	}
-	k.Revoked = true
+	key.Revoked = true
 	return nil
 }
 
@@ -98,19 +98,19 @@ func signedEIP712(t *testing.T) (address string, sigHex string) {
 // the SDK's createL1Headers function would populate.
 func l1Request(t *testing.T, address, sigHex, timestamp, nonce string) *http.Request {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	r.Header.Set(HeaderAddress, address)
-	r.Header.Set(HeaderSignature, sigHex)
-	r.Header.Set(HeaderTimestamp, timestamp)
-	r.Header.Set(HeaderNonce, nonce)
-	return r
+	request := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
+	request.Header.Set(HeaderAddress, address)
+	request.Header.Set(HeaderSignature, sigHex)
+	request.Header.Set(HeaderTimestamp, timestamp)
+	request.Header.Set(HeaderNonce, nonce)
+	return request
 }
 
 // keysOf lists map keys for readable assertion errors.
 func keysOf(m map[string]interface{}) []string {
 	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
+	for key := range m {
+		out = append(out, key)
 	}
 	return out
 }
@@ -124,15 +124,15 @@ func TestDeriveAPIKey_HappyPath(t *testing.T) {
 
 	address, sigHex := signedEIP712(t)
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
-	r := l1Request(t, address, sigHex, "1700000000", "0")
-	w := httptest.NewRecorder()
+	request := l1Request(t, address, sigHex, "1700000000", "0")
+	recorder := httptest.NewRecorder()
 
-	h.deriveAPIKey(w, r)
+	handler.deriveAPIKey(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 
 	var resp struct {
@@ -140,14 +140,14 @@ func TestDeriveAPIKey_HappyPath(t *testing.T) {
 		Secret     string `json:"secret"`
 		Passphrase string `json:"passphrase"`
 	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+	if err := json.NewDecoder(recorder.Body).Decode(&resp); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	if resp.APIKey == "" || resp.Secret == "" || resp.Passphrase == "" {
 		t.Errorf("response fields empty: %+v", resp)
 	}
-	if strings.Contains(w.Body.String(), "expires_at") || strings.Contains(w.Body.String(), "expiresAt") {
-		t.Errorf("response must not include expires_at field, got: %s", w.Body.String())
+	if strings.Contains(recorder.Body.String(), "expires_at") || strings.Contains(recorder.Body.String(), "expiresAt") {
+		t.Errorf("response must not include expires_at field, got: %s", recorder.Body.String())
 	}
 	if len(repo.apiKeys) != 1 {
 		t.Errorf("repo apiKeys count = %d, want 1", len(repo.apiKeys))
@@ -166,26 +166,26 @@ func TestDeriveAPIKey_SDKShapedRequest(t *testing.T) {
 
 	address, sigHex := signedEIP712(t)
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	r.Header.Set("POLY_ADDRESS", address)
-	r.Header.Set("POLY_SIGNATURE", sigHex)
-	r.Header.Set("POLY_TIMESTAMP", "1700000000")
-	r.Header.Set("POLY_NONCE", "0")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
+	request.Header.Set("POLY_ADDRESS", address)
+	request.Header.Set("POLY_SIGNATURE", sigHex)
+	request.Header.Set("POLY_TIMESTAMP", "1700000000")
+	request.Header.Set("POLY_NONCE", "0")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 
 	var raw map[string]interface{}
-	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(recorder.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	for _, field := range []string{"apiKey", "secret", "passphrase"} {
@@ -205,18 +205,18 @@ func TestDeriveAPIKey_DefaultNonce(t *testing.T) {
 
 	address, sigHex := signedEIP712(t)
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	r.Header.Set(HeaderAddress, address)
-	r.Header.Set(HeaderSignature, sigHex)
-	r.Header.Set(HeaderTimestamp, "1700000000")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
+	request.Header.Set(HeaderAddress, address)
+	request.Header.Set(HeaderSignature, sigHex)
+	request.Header.Set(HeaderTimestamp, "1700000000")
+	recorder := httptest.NewRecorder()
 
-	h.deriveAPIKey(w, r)
+	handler.deriveAPIKey(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 }
 
@@ -224,15 +224,15 @@ func TestDeriveAPIKey_MissingHeaders(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
+	recorder := httptest.NewRecorder()
 
-	h.deriveAPIKey(w, r)
+	handler.deriveAPIKey(recorder, request)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 
@@ -240,18 +240,18 @@ func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
 	addr := "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	badSig := "0x" + hex.EncodeToString(make([]byte, 65))
 
-	r := l1Request(t, addr, badSig, "1700000000", "0")
-	w := httptest.NewRecorder()
+	request := l1Request(t, addr, badSig, "1700000000", "0")
+	recorder := httptest.NewRecorder()
 
-	h.deriveAPIKey(w, r)
+	handler.deriveAPIKey(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -260,28 +260,28 @@ func TestDeriveAPIKey_Idempotent(t *testing.T) {
 
 	address, sigHex := signedEIP712(t)
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 
 	call := func() (apiKey, secret, passphrase string) {
-		rq := l1Request(t, address, sigHex, "1700000000", "0")
-		rw := httptest.NewRecorder()
-		h.deriveAPIKey(rw, rq)
-		if rw.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d, body: %s", rw.Code, http.StatusOK, rw.Body.String())
+		request := l1Request(t, address, sigHex, "1700000000", "0")
+		recorder := httptest.NewRecorder()
+		handler.deriveAPIKey(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 		}
 		var resp struct {
 			APIKey     string `json:"apiKey"`
 			Secret     string `json:"secret"`
 			Passphrase string `json:"passphrase"`
 		}
-		json.NewDecoder(rw.Body).Decode(&resp)
+		json.NewDecoder(recorder.Body).Decode(&resp)
 		return resp.APIKey, resp.Secret, resp.Passphrase
 	}
 
-	k1, s1, p1 := call()
-	k2, s2, p2 := call()
-	if k1 != k2 || s1 != s2 || p1 != p2 {
-		t.Errorf("derive is not idempotent: (%q,%q,%q) vs (%q,%q,%q)", k1, s1, p1, k2, s2, p2)
+	key1, secret1, pass1 := call()
+	key2, secret2, pass2 := call()
+	if key1 != key2 || secret1 != secret2 || pass1 != pass2 {
+		t.Errorf("derive is not idempotent: (%q,%q,%q) vs (%q,%q,%q)", key1, secret1, pass1, key2, secret2, pass2)
 	}
 }
 
@@ -313,21 +313,21 @@ func seedAPIKey(t *testing.T, repo *fakeRepo, address string) (rawKey, secretB64
 	return rawKey, secretB64, passphrase
 }
 
-// signL2Request sets L2 HMAC headers on r with a signature over its
+// signL2Request sets L2 HMAC headers on request with a signature over its
 // method+path+body. Mirrors clob-client v5.8.2 signing rules.
-func signL2Request(t *testing.T, r *http.Request, apiKey, secretB64, passphrase, body string) {
+func signL2Request(t *testing.T, request *http.Request, apiKey, secretB64, passphrase, body string) {
 	t.Helper()
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	msg := BuildHMACMessage(ts, r.Method, r.URL.Path, body)
+	msg := BuildHMACMessage(ts, request.Method, request.URL.Path, body)
 	secretBytes, _ := base64.URLEncoding.DecodeString(secretB64)
 	mac := hmac.New(sha256.New, secretBytes)
 	mac.Write([]byte(msg))
 	sig := base64.URLEncoding.EncodeToString(mac.Sum(nil))
 
-	r.Header.Set(HeaderAPIKey, apiKey)
-	r.Header.Set(HeaderTimestamp, ts)
-	r.Header.Set(HeaderSignature, sig)
-	r.Header.Set(HeaderPassphrase, passphrase)
+	request.Header.Set(HeaderAPIKey, apiKey)
+	request.Header.Set(HeaderTimestamp, ts)
+	request.Header.Set(HeaderSignature, sig)
+	request.Header.Set(HeaderPassphrase, passphrase)
 }
 
 func TestRevokeAPIKey_Success(t *testing.T) {
@@ -346,19 +346,19 @@ func TestRevokeAPIKey_Success(t *testing.T) {
 
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
 
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
 	body := `{"api_key":"` + rawKeyToRevoke + `"}`
-	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
-	signL2Request(t, r, callerKey, callerSecret, callerPass, body)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
+	signL2Request(t, request, callerKey, callerSecret, callerPass, body)
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want %d, body: %s", w.Code, http.StatusNoContent, w.Body.String())
+	if recorder.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d, body: %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
 	}
 	if !repo.apiKeys[keyHash].Revoked {
 		t.Error("expected api key to be marked revoked")
@@ -372,19 +372,19 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 	repo := newFakeRepo()
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
 
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
 	body := `{"api_key":"does-not-exist"}`
-	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
-	signL2Request(t, r, callerKey, callerSecret, callerPass, body)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
+	signL2Request(t, request, callerKey, callerSecret, callerPass, body)
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
+	if recorder.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
 
@@ -395,18 +395,18 @@ func TestRevokeAPIKey_MissingField(t *testing.T) {
 	repo := newFakeRepo()
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
 
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader("{}"))
-	signL2Request(t, r, callerKey, callerSecret, callerPass, "{}")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader("{}"))
+	signL2Request(t, request, callerKey, callerSecret, callerPass, "{}")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 
@@ -414,18 +414,18 @@ func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(`{"api_key":"x"}`))
-	r.Header.Set("Authorization", "Bearer some.jwt.token")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(`{"api_key":"x"}`))
+	request.Header.Set("Authorization", "Bearer some.jwt.token")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -447,21 +447,21 @@ func TestListAPIKeys_WithKeys(t *testing.T) {
 	}
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
 
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
-	signL2Request(t, r, callerKey, callerSecret, callerPass, "")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	signL2Request(t, request, callerKey, callerSecret, callerPass, "")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	var items []apiKeyListItem
-	if err := json.NewDecoder(w.Body).Decode(&items); err != nil {
+	if err := json.NewDecoder(recorder.Body).Decode(&items); err != nil {
 		t.Fatalf("decoding response: %v", err)
 	}
 	if len(items) != 3 {
@@ -482,20 +482,20 @@ func TestListAPIKeys_SecretsStripped(t *testing.T) {
 	}
 	callerKey, callerSecret, callerPass := seedAPIKey(t, repo, addr)
 
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
-	signL2Request(t, r, callerKey, callerSecret, callerPass, "")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	signL2Request(t, request, callerKey, callerSecret, callerPass, "")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
-	if strings.Contains(w.Body.String(), "super-secret-ciphertext") {
+	if strings.Contains(recorder.Body.String(), "super-secret-ciphertext") {
 		t.Error("response must not include HMACSecretEncrypted")
 	}
 }
@@ -504,17 +504,17 @@ func TestListAPIKeys_RejectsJWT(t *testing.T) {
 	t.Parallel()
 
 	repo := newFakeRepo()
-	h := testHandler(t, repo)
+	handler := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
-	r.Header.Set("Authorization", "Bearer some.jwt.token")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
+	request.Header.Set("Authorization", "Bearer some.jwt.token")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
 }

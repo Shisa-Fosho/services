@@ -33,20 +33,20 @@ type statusWriter struct {
 	written bool
 }
 
-func (sw *statusWriter) WriteHeader(code int) {
-	if !sw.written {
-		sw.code = code
-		sw.written = true
+func (writer *statusWriter) WriteHeader(code int) {
+	if !writer.written {
+		writer.code = code
+		writer.written = true
 	}
-	sw.ResponseWriter.WriteHeader(code)
+	writer.ResponseWriter.WriteHeader(code)
 }
 
-func (sw *statusWriter) Write(b []byte) (int, error) {
-	if !sw.written {
-		sw.code = http.StatusOK
-		sw.written = true
+func (writer *statusWriter) Write(data []byte) (int, error) {
+	if !writer.written {
+		writer.code = http.StatusOK
+		writer.written = true
 	}
-	return sw.ResponseWriter.Write(b)
+	return writer.ResponseWriter.Write(data)
 }
 
 // Logging returns HTTP middleware that logs each request with method, path,
@@ -55,14 +55,14 @@ func Logging(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+			writer := &statusWriter{ResponseWriter: w, code: http.StatusOK}
 
-			next.ServeHTTP(sw, r)
+			next.ServeHTTP(writer, r)
 
 			logger.Info("http request",
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
-				zap.Int("status", sw.code),
+				zap.Int("status", writer.code),
 				zap.Duration("duration", time.Since(start)),
 				zap.String("request_id", observability.RequestIDFrom(r.Context())),
 			)

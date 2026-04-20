@@ -32,23 +32,23 @@ const (
 // Middleware returns an HTTP middleware enforcing the named profile.
 // Panics at registration time if profileName is unknown — this is a
 // programmer error and should surface immediately.
-func (l *Limiter) Middleware(profileName string, keyBy KeyStrategy) func(http.Handler) http.Handler {
-	p, ok := l.profiles[profileName]
+func (limiter *Limiter) Middleware(profileName string, keyBy KeyStrategy) func(http.Handler) http.Handler {
+	profile, ok := limiter.profiles[profileName]
 	if !ok {
 		panic(fmt.Sprintf("ratelimit: unknown profile %q", profileName))
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := ClientIP(r, l.trustProxy)
-			if p.MaxFailures > 0 {
-				if locked, remaining := l.IsLockedOut(ip); locked {
-					l.reject(w, r, p, keyTypeIP, remaining)
+			ip := ClientIP(r, limiter.trustProxy)
+			if profile.MaxFailures > 0 {
+				if locked, remaining := limiter.IsLockedOut(ip); locked {
+					limiter.reject(w, r, profile, keyTypeIP, remaining)
 					return
 				}
 			}
-			allowed, retryAfter, keyType := l.applyProfile(r, p, keyBy, ip)
+			allowed, retryAfter, keyType := limiter.applyProfile(r, profile, keyBy, ip)
 			if !allowed {
-				l.reject(w, r, p, keyType, retryAfter)
+				limiter.reject(w, r, profile, keyType, retryAfter)
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -56,34 +56,34 @@ func (l *Limiter) Middleware(profileName string, keyBy KeyStrategy) func(http.Ha
 	}
 }
 
-func (l *Limiter) applyProfile(r *http.Request, p *Profile, keyBy KeyStrategy, ip string) (bool, time.Duration, string) {
+func (limiter *Limiter) applyProfile(r *http.Request, profile *Profile, keyBy KeyStrategy, ip string) (bool, time.Duration, string) {
 	if keyBy == KeyByUser {
-		if user := l.extractUser(r); user != "" {
-			ok, ra := l.AllowUser(p, user)
-			return ok, ra, keyTypeUser
+		if user := limiter.extractUser(r); user != "" {
+			ok, retryAfter := limiter.AllowUser(profile, user)
+			return ok, retryAfter, keyTypeUser
 		}
 	}
-	ok, ra := l.AllowIP(p, ip)
-	return ok, ra, keyTypeIP
+	ok, retryAfter := limiter.AllowIP(profile, ip)
+	return ok, retryAfter, keyTypeIP
 }
 
-func (l *Limiter) extractUser(r *http.Request) string {
-	if l.userExtractor == nil {
+func (limiter *Limiter) extractUser(r *http.Request) string {
+	if limiter.userExtractor == nil {
 		return ""
 	}
-	return l.userExtractor(r.Context())
+	return limiter.userExtractor(r.Context())
 }
 
-func (l *Limiter) reject(w http.ResponseWriter, r *http.Request, p *Profile, keyType string, retryAfter time.Duration) {
+func (limiter *Limiter) reject(w http.ResponseWriter, r *http.Request, profile *Profile, keyType string, retryAfter time.Duration) {
 	seconds := int(math.Ceil(retryAfter.Seconds()))
 	if seconds < 1 {
 		seconds = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
-	l.metrics.RateLimitRejectedTotal.WithLabelValues(p.Name, keyType).Inc()
-	l.logger.Debug("rate limit rejected",
+	limiter.metrics.RateLimitRejectedTotal.WithLabelValues(profile.Name, keyType).Inc()
+	limiter.logger.Debug("rate limit rejected",
 		zap.String("request_id", observability.RequestIDFrom(r.Context())),
-		zap.String("profile", p.Name),
+		zap.String("profile", profile.Name),
 		zap.String("key_type", keyType),
 		zap.Int("retry_after_seconds", seconds),
 	)
@@ -97,21 +97,21 @@ func (l *Limiter) reject(w http.ResponseWriter, r *http.Request, p *Profile, key
 //
 // Exported so services can key auth-failure callbacks on the same IP the
 // middleware used.
-func ClientIP(r *http.Request, trustProxy bool) string {
+func ClientIP(request *http.Request, trustProxy bool) string {
 	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if i := strings.IndexByte(xff, ','); i >= 0 {
-				return strings.TrimSpace(xff[:i])
+		if xff := request.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.IndexByte(xff, ','); idx >= 0 {
+				return strings.TrimSpace(xff[:idx])
 			}
 			return strings.TrimSpace(xff)
 		}
-		if xr := r.Header.Get("X-Real-IP"); xr != "" {
-			return strings.TrimSpace(xr)
+		if realIP := request.Header.Get("X-Real-IP"); realIP != "" {
+			return strings.TrimSpace(realIP)
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		return request.RemoteAddr
 	}
 	return host
 }

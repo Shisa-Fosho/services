@@ -30,13 +30,13 @@ func NewPoolHealthChecker(pool interface {
 }
 
 // Check pings the database to verify connectivity.
-func (c *PoolHealthChecker) Check(ctx context.Context) error {
-	return c.pool.Ping(ctx)
+func (checker *PoolHealthChecker) Check(ctx context.Context) error {
+	return checker.pool.Ping(ctx)
 }
 
 // WatchHealth periodically checks the given HealthChecker and updates the
 // gRPC health server status. It blocks until ctx is cancelled.
-func WatchHealth(ctx context.Context, hs *health.Server, serviceName string, checker HealthChecker, interval time.Duration, logger *zap.Logger) {
+func WatchHealth(ctx context.Context, healthServer *health.Server, serviceName string, checker HealthChecker, interval time.Duration, logger *zap.Logger) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -51,9 +51,9 @@ func WatchHealth(ctx context.Context, hs *health.Server, serviceName string, che
 
 			if err != nil {
 				logger.Warn("health check failed", zap.Error(err))
-				hs.SetServingStatus(serviceName, healthpb.HealthCheckResponse_NOT_SERVING)
+				healthServer.SetServingStatus(serviceName, healthpb.HealthCheckResponse_NOT_SERVING)
 			} else {
-				hs.SetServingStatus(serviceName, healthpb.HealthCheckResponse_SERVING)
+				healthServer.SetServingStatus(serviceName, healthpb.HealthCheckResponse_SERVING)
 			}
 		}
 	}

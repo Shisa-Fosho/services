@@ -42,122 +42,122 @@ func TestValidateOrder(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		modify  func(o *Order, c *MarketConfig)
+		modify  func(order *Order, config *MarketConfig)
 		wantErr bool
 	}{
 		{
 			name:    "valid order passes",
-			modify:  func(o *Order, c *MarketConfig) {},
+			modify:  func(order *Order, config *MarketConfig) {},
 			wantErr: false,
 		},
 		{
 			name:    "zero maker amount",
-			modify:  func(o *Order, c *MarketConfig) { o.MakerAmount = 0 },
+			modify:  func(order *Order, config *MarketConfig) { order.MakerAmount = 0 },
 			wantErr: true,
 		},
 		{
 			name:    "negative maker amount",
-			modify:  func(o *Order, c *MarketConfig) { o.MakerAmount = -1 },
+			modify:  func(order *Order, config *MarketConfig) { order.MakerAmount = -1 },
 			wantErr: true,
 		},
 		{
 			name:    "zero taker amount",
-			modify:  func(o *Order, c *MarketConfig) { o.TakerAmount = 0 },
+			modify:  func(order *Order, config *MarketConfig) { order.TakerAmount = 0 },
 			wantErr: true,
 		},
 		{
 			name:    "negative taker amount",
-			modify:  func(o *Order, c *MarketConfig) { o.TakerAmount = -5 },
+			modify:  func(order *Order, config *MarketConfig) { order.TakerAmount = -5 },
 			wantErr: true,
 		},
 		{
 			name: "price too low",
-			modify: func(o *Order, c *MarketConfig) {
+			modify: func(order *Order, config *MarketConfig) {
 				// Price = 0 cents: maker=0, taker=100 would fail on maker<=0 first,
 				// so use amounts that produce price=0 via integer division.
-				o.MakerAmount = 0
-				o.TakerAmount = 100
+				order.MakerAmount = 0
+				order.TakerAmount = 100
 			},
 			wantErr: true, // Fails on maker amount <= 0.
 		},
 		{
 			name: "price too high at 100",
-			modify: func(o *Order, c *MarketConfig) {
+			modify: func(order *Order, config *MarketConfig) {
 				// Price = 100: taker must be 0 but that fails taker<=0 check.
-				o.MakerAmount = 100
-				o.TakerAmount = 0
+				order.MakerAmount = 100
+				order.TakerAmount = 0
 			},
 			wantErr: true, // Fails on taker amount <= 0.
 		},
 		{
 			name: "price not on tick size 5",
-			modify: func(o *Order, c *MarketConfig) {
-				c.TickSize = 5
-				o.MakerAmount = 33 // Price = 33, not divisible by 5.
-				o.TakerAmount = 67
+			modify: func(order *Order, config *MarketConfig) {
+				config.TickSize = 5
+				order.MakerAmount = 33 // Price = 33, not divisible by 5.
+				order.TakerAmount = 67
 			},
 			wantErr: true,
 		},
 		{
 			name: "price on tick size 5",
-			modify: func(o *Order, c *MarketConfig) {
-				c.TickSize = 5
-				o.MakerAmount = 35 // Price = 35, divisible by 5.
-				o.TakerAmount = 65
+			modify: func(order *Order, config *MarketConfig) {
+				config.TickSize = 5
+				order.MakerAmount = 35 // Price = 35, divisible by 5.
+				order.TakerAmount = 65
 			},
 			wantErr: false,
 		},
 		{
 			name: "size below minimum",
-			modify: func(o *Order, c *MarketConfig) {
-				c.MinSize = 100
-				o.TakerAmount = 50
-				o.MakerAmount = 50 // Keep price valid.
+			modify: func(order *Order, config *MarketConfig) {
+				config.MinSize = 100
+				order.TakerAmount = 50
+				order.MakerAmount = 50 // Keep price valid.
 			},
 			wantErr: true,
 		},
 		{
 			name: "size above maximum",
-			modify: func(o *Order, c *MarketConfig) {
-				c.MaxSize = 10
-				o.TakerAmount = 50
-				o.MakerAmount = 50
+			modify: func(order *Order, config *MarketConfig) {
+				config.MaxSize = 10
+				order.TakerAmount = 50
+				order.MakerAmount = 50
 			},
 			wantErr: true,
 		},
 		{
 			name:    "invalid side",
-			modify:  func(o *Order, c *MarketConfig) { o.Side = Side(99) },
+			modify:  func(order *Order, config *MarketConfig) { order.Side = Side(99) },
 			wantErr: true,
 		},
 		{
 			name:    "invalid order type",
-			modify:  func(o *Order, c *MarketConfig) { o.OrderType = OrderType(99) },
+			modify:  func(order *Order, config *MarketConfig) { order.OrderType = OrderType(99) },
 			wantErr: true,
 		},
 		{
 			name:    "FOK order type is valid",
-			modify:  func(o *Order, c *MarketConfig) { o.OrderType = OrderTypeFOK },
+			modify:  func(order *Order, config *MarketConfig) { order.OrderType = OrderTypeFOK },
 			wantErr: false,
 		},
 		{
 			name:    "empty signature",
-			modify:  func(o *Order, c *MarketConfig) { o.Signature = "" },
+			modify:  func(order *Order, config *MarketConfig) { order.Signature = "" },
 			wantErr: true,
 		},
 		{
 			name:    "expired order",
-			modify:  func(o *Order, c *MarketConfig) { o.Expiration = now.Unix() - 1 },
+			modify:  func(order *Order, config *MarketConfig) { order.Expiration = now.Unix() - 1 },
 			wantErr: true,
 		},
 		{
 			name:    "no expiration (0) is valid",
-			modify:  func(o *Order, c *MarketConfig) { o.Expiration = 0 },
+			modify:  func(order *Order, config *MarketConfig) { order.Expiration = 0 },
 			wantErr: false,
 		},
 		{
 			name:    "expiration exactly at now is valid",
-			modify:  func(o *Order, c *MarketConfig) { o.Expiration = now.Unix() },
+			modify:  func(order *Order, config *MarketConfig) { order.Expiration = now.Unix() },
 			wantErr: false,
 		},
 	}
@@ -166,11 +166,11 @@ func TestValidateOrder(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			o := validOrder()
-			c := cfg // Copy so modifications don't leak between tests.
-			tt.modify(o, &c)
+			order := validOrder()
+			cfgCopy := cfg // Copy so modifications don't leak between tests.
+			tt.modify(order, &cfgCopy)
 
-			err := ValidateOrder(o, c, now)
+			err := ValidateOrder(order, cfgCopy, now)
 
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")

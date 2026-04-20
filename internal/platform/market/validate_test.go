@@ -24,44 +24,44 @@ func TestValidateEvent(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		modify  func(e *Event)
+		modify  func(event *Event)
 		wantErr bool
 	}{
 		{
 			name:    "valid event passes",
-			modify:  func(e *Event) {},
+			modify:  func(event *Event) {},
 			wantErr: false,
 		},
 		{
 			name:    "empty slug",
-			modify:  func(e *Event) { e.Slug = "" },
+			modify:  func(event *Event) { event.Slug = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty title",
-			modify:  func(e *Event) { e.Title = "" },
+			modify:  func(event *Event) { event.Title = "" },
 			wantErr: true,
 		},
 		{
 			name:    "end date in the past",
-			modify:  func(e *Event) { e.EndDate = time.Now().Add(-1 * time.Hour) },
+			modify:  func(event *Event) { event.EndDate = time.Now().Add(-1 * time.Hour) },
 			wantErr: true,
 		},
 		{
 			name:    "invalid event type",
-			modify:  func(e *Event) { e.EventType = EventType(99) },
+			modify:  func(event *Event) { event.EventType = EventType(99) },
 			wantErr: true,
 		},
 		{
 			name:    "invalid status",
-			modify:  func(e *Event) { e.Status = Status(99) },
+			modify:  func(event *Event) { event.Status = Status(99) },
 			wantErr: true,
 		},
 		{
 			name: "with category ID is valid",
-			modify: func(e *Event) {
+			modify: func(event *Event) {
 				catID := "550e8400-e29b-41d4-a716-446655440000"
-				e.CategoryID = &catID
+				event.CategoryID = &catID
 			},
 			wantErr: false,
 		},
@@ -70,9 +70,9 @@ func TestValidateEvent(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := validEvent()
-			tt.modify(e)
-			err := ValidateEvent(e, time.Now())
+			event := validEvent()
+			tt.modify(event)
+			err := ValidateEvent(event, time.Now())
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
@@ -106,59 +106,59 @@ func TestValidateMarket(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		modify  func(m *Market)
+		modify  func(market *Market)
 		wantErr bool
 	}{
 		{
 			name:    "valid market passes",
-			modify:  func(m *Market) {},
+			modify:  func(market *Market) {},
 			wantErr: false,
 		},
 		{
 			name:    "empty slug",
-			modify:  func(m *Market) { m.Slug = "" },
+			modify:  func(market *Market) { market.Slug = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty question",
-			modify:  func(m *Market) { m.Question = "" },
+			modify:  func(market *Market) { market.Question = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty yes label",
-			modify:  func(m *Market) { m.OutcomeYesLabel = "" },
+			modify:  func(market *Market) { market.OutcomeYesLabel = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty no label",
-			modify:  func(m *Market) { m.OutcomeNoLabel = "" },
+			modify:  func(market *Market) { market.OutcomeNoLabel = "" },
 			wantErr: true,
 		},
 		{
 			name:    "invalid status",
-			modify:  func(m *Market) { m.Status = Status(99) },
+			modify:  func(market *Market) { market.Status = Status(99) },
 			wantErr: true,
 		},
 		{
 			name:    "empty token ID yes",
-			modify:  func(m *Market) { m.TokenIDYes = "" },
+			modify:  func(market *Market) { market.TokenIDYes = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty token ID no",
-			modify:  func(m *Market) { m.TokenIDNo = "" },
+			modify:  func(market *Market) { market.TokenIDNo = "" },
 			wantErr: true,
 		},
 		{
 			name:    "empty condition ID",
-			modify:  func(m *Market) { m.ConditionID = "" },
+			modify:  func(market *Market) { market.ConditionID = "" },
 			wantErr: true,
 		},
 		{
 			name: "with event ID is valid",
-			modify: func(m *Market) {
+			modify: func(market *Market) {
 				eventID := "550e8400-e29b-41d4-a716-446655440000"
-				m.EventID = &eventID
+				market.EventID = &eventID
 			},
 			wantErr: false,
 		},
@@ -167,9 +167,9 @@ func TestValidateMarket(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			m := validMarket()
-			tt.modify(m)
-			err := ValidateMarket(m)
+			market := validMarket()
+			tt.modify(market)
+			err := ValidateMarket(market)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}

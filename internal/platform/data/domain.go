@@ -26,8 +26,8 @@ const (
 	SignupMethodEmail  SignupMethod = 1
 )
 
-func (m SignupMethod) String() string {
-	switch m {
+func (method SignupMethod) String() string {
+	switch method {
 	case SignupMethodWallet:
 		return "WALLET"
 	case SignupMethodEmail:
@@ -38,8 +38,8 @@ func (m SignupMethod) String() string {
 }
 
 // IsValid returns true if the signup method is a known value.
-func (m SignupMethod) IsValid() bool {
-	return m == SignupMethodWallet || m == SignupMethodEmail
+func (method SignupMethod) IsValid() bool {
+	return method == SignupMethodWallet || method == SignupMethodEmail
 }
 
 // Side represents the direction of a position (BUY or SELL).
@@ -52,8 +52,8 @@ const (
 	SideSell Side = 1
 )
 
-func (s Side) String() string {
-	switch s {
+func (side Side) String() string {
+	switch side {
 	case SideBuy:
 		return "BUY"
 	case SideSell:
@@ -64,8 +64,8 @@ func (s Side) String() string {
 }
 
 // IsValid returns true if the side is BUY or SELL.
-func (s Side) IsValid() bool {
-	return s == SideBuy || s == SideSell
+func (side Side) IsValid() bool {
+	return side == SideBuy || side == SideSell
 }
 
 // User represents a registered user of the platform.

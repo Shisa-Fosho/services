@@ -18,7 +18,7 @@ type StreamConfig struct {
 }
 
 // EnsureStream creates or updates a JetStream stream (idempotent).
-func (c *Client) EnsureStream(cfg StreamConfig) (*nats.StreamInfo, error) {
+func (client *Client) EnsureStream(cfg StreamConfig) (*nats.StreamInfo, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("creating stream: name is required")
 	}
@@ -43,16 +43,16 @@ func (c *Client) EnsureStream(cfg StreamConfig) (*nats.StreamInfo, error) {
 	}
 
 	// Try to update first; if stream doesn't exist, create it.
-	info, err := c.js.StreamInfo(cfg.Name)
+	info, err := client.jetStream.StreamInfo(cfg.Name)
 	if err == nil && info != nil {
-		info, err = c.js.UpdateStream(jsCfg)
+		info, err = client.jetStream.UpdateStream(jsCfg)
 		if err != nil {
 			return nil, fmt.Errorf("updating stream %s: %w", cfg.Name, err)
 		}
 		return info, nil
 	}
 
-	info, err = c.js.AddStream(jsCfg)
+	info, err = client.jetStream.AddStream(jsCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating stream %s: %w", cfg.Name, err)
 	}
@@ -60,7 +60,7 @@ func (c *Client) EnsureStream(cfg StreamConfig) (*nats.StreamInfo, error) {
 }
 
 // EnsureConsumer creates or updates a JetStream consumer (idempotent).
-func (c *Client) EnsureConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
+func (client *Client) EnsureConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.ConsumerInfo, error) {
 	if stream == "" {
 		return nil, fmt.Errorf("creating consumer: stream name is required")
 	}
@@ -68,7 +68,7 @@ func (c *Client) EnsureConsumer(stream string, cfg *nats.ConsumerConfig) (*nats.
 		return nil, fmt.Errorf("creating consumer on %s: config is required", stream)
 	}
 
-	info, err := c.js.AddConsumer(stream, cfg)
+	info, err := client.jetStream.AddConsumer(stream, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating consumer %s on %s: %w", cfg.Durable, stream, err)
 	}

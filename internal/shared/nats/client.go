@@ -19,9 +19,9 @@ type ClientConfig struct {
 
 // Client wraps a NATS connection and JetStream context.
 type Client struct {
-	conn   *nats.Conn
-	js     nats.JetStreamContext
-	logger *zap.Logger
+	conn      *nats.Conn
+	jetStream nats.JetStreamContext
+	logger    *zap.Logger
 }
 
 // NewClient connects to NATS, creates a JetStream context, and sets up
@@ -54,16 +54,16 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		return nil, fmt.Errorf("connecting to NATS at %s: %w", cfg.URL, err)
 	}
 
-	js, err := conn.JetStream()
+	jetStream, err := conn.JetStream()
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("creating JetStream context: %w", err)
 	}
 
 	return &Client{
-		conn:   conn,
-		js:     js,
-		logger: logger,
+		conn:      conn,
+		jetStream: jetStream,
+		logger:    logger,
 	}, nil
 }
 
@@ -78,23 +78,23 @@ func ClientFromEnv(logger *zap.Logger, name string) (*Client, error) {
 }
 
 // Conn returns the underlying NATS connection.
-func (c *Client) Conn() *nats.Conn {
-	return c.conn
+func (client *Client) Conn() *nats.Conn {
+	return client.conn
 }
 
 // JetStream returns the JetStream context.
-func (c *Client) JetStream() nats.JetStreamContext {
-	return c.js
+func (client *Client) JetStream() nats.JetStreamContext {
+	return client.jetStream
 }
 
 // Close drains the connection and then closes it.
-func (c *Client) Close() {
-	if err := c.conn.Drain(); err != nil {
-		c.logger.Warn("error draining NATS connection", zap.Error(err))
+func (client *Client) Close() {
+	if err := client.conn.Drain(); err != nil {
+		client.logger.Warn("error draining NATS connection", zap.Error(err))
 	}
 }
 
 // Drain initiates a graceful drain of the connection.
-func (c *Client) Drain() error {
-	return c.conn.Drain()
+func (client *Client) Drain() error {
+	return client.conn.Drain()
 }

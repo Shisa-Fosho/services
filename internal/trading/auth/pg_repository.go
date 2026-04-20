@@ -27,11 +27,11 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 // updates expires_at, hmac_secret_encrypted, and passphrase_hash —
 // enabling idempotent re-derivation when the client presents the same
 // EIP-712 signature inputs.
-func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
+func (repo *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 	if err := ValidateAPIKey(key); err != nil {
 		return fmt.Errorf("upserting api key: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO api_keys (key_hash, user_address, hmac_secret_encrypted, passphrase_hash, label, expires_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (key_hash)
@@ -48,8 +48,8 @@ func (r *PGRepository) UpsertAPIKey(ctx context.Context, key *APIKey) error {
 // GetAPIKeyByHash retrieves a single non-revoked, non-expired API key by its
 // hash. Implements APIKeyReader so the HMAC middleware (same package) can use
 // this repository directly for L2 verification.
-func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*APIKey, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM api_keys
 		 WHERE key_hash = $1 AND revoked = false AND expires_at > now()`,
 		keyHash,
@@ -69,8 +69,8 @@ func (r *PGRepository) GetAPIKeyByHash(ctx context.Context, keyHash string) (*AP
 
 // GetAPIKeysByUser returns all non-revoked, non-expired API keys for a user,
 // ordered by created_at descending (newest first).
-func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string) ([]*APIKey, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM api_keys
 		 WHERE user_address = $1 AND revoked = false AND expires_at > now()
 		 ORDER BY created_at DESC`,
@@ -89,8 +89,8 @@ func (r *PGRepository) GetAPIKeysByUser(ctx context.Context, userAddress string)
 // RevokeAPIKey marks an API key as revoked by its key_hash, scoped by user.
 // Returns data.ErrNotFound if the key does not exist or does not belong to
 // the given user.
-func (r *PGRepository) RevokeAPIKey(ctx context.Context, keyHash string, userAddress string) error {
-	tag, err := r.pool.Exec(ctx,
+func (repo *PGRepository) RevokeAPIKey(ctx context.Context, keyHash string, userAddress string) error {
+	tag, err := repo.pool.Exec(ctx,
 		`UPDATE api_keys SET revoked = true
 		 WHERE key_hash = $1 AND user_address = $2 AND revoked = false`,
 		keyHash, userAddress,

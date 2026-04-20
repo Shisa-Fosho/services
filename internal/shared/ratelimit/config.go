@@ -55,49 +55,49 @@ func DefaultProfiles() []Profile {
 // For a profile named "X", env vars are RATELIMIT_X_RPM, RATELIMIT_X_BURST,
 // RATELIMIT_X_MAX_FAILURES, RATELIMIT_X_LOCKOUT_SECONDS, RATELIMIT_X_MAX_ENTRIES.
 func LoadProfilesFromEnv() []Profile {
-	ps := DefaultProfiles()
-	for i := range ps {
-		p := &ps[i]
-		prefix := "RATELIMIT_" + strings.ToUpper(p.Name)
+	profiles := DefaultProfiles()
+	for idx := range profiles {
+		profile := &profiles[idx]
+		prefix := "RATELIMIT_" + strings.ToUpper(profile.Name)
 		if rpm := readPositiveInt(prefix + "_RPM"); rpm > 0 {
-			p.Rate = rate.Every(time.Minute / time.Duration(rpm))
+			profile.Rate = rate.Every(time.Minute / time.Duration(rpm))
 		}
-		if b := readPositiveInt(prefix + "_BURST"); b > 0 {
-			p.Burst = b
+		if burst := readPositiveInt(prefix + "_BURST"); burst > 0 {
+			profile.Burst = burst
 		}
-		if f := readNonNegativeInt(prefix + "_MAX_FAILURES"); f >= 0 {
-			p.MaxFailures = f
+		if failures := readNonNegativeInt(prefix + "_MAX_FAILURES"); failures >= 0 {
+			profile.MaxFailures = failures
 		}
-		if s := readNonNegativeInt(prefix + "_LOCKOUT_SECONDS"); s >= 0 {
-			p.LockoutDuration = time.Duration(s) * time.Second
+		if seconds := readNonNegativeInt(prefix + "_LOCKOUT_SECONDS"); seconds >= 0 {
+			profile.LockoutDuration = time.Duration(seconds) * time.Second
 		}
-		if m := readPositiveInt(prefix + "_MAX_ENTRIES"); m > 0 {
-			p.MaxEntries = m
+		if maxEntries := readPositiveInt(prefix + "_MAX_ENTRIES"); maxEntries > 0 {
+			profile.MaxEntries = maxEntries
 		}
 	}
-	return ps
+	return profiles
 }
 
 // SweepIntervalFromEnv reads RATELIMIT_SWEEP_INTERVAL_SECONDS (default 60).
 func SweepIntervalFromEnv() time.Duration {
-	if s := readPositiveInt("RATELIMIT_SWEEP_INTERVAL_SECONDS"); s > 0 {
-		return time.Duration(s) * time.Second
+	if seconds := readPositiveInt("RATELIMIT_SWEEP_INTERVAL_SECONDS"); seconds > 0 {
+		return time.Duration(seconds) * time.Second
 	}
 	return 60 * time.Second
 }
 
 // SweepBatchSizeFromEnv reads RATELIMIT_SWEEP_BATCH_SIZE (default 500).
 func SweepBatchSizeFromEnv() int {
-	if s := readPositiveInt("RATELIMIT_SWEEP_BATCH_SIZE"); s > 0 {
-		return s
+	if size := readPositiveInt("RATELIMIT_SWEEP_BATCH_SIZE"); size > 0 {
+		return size
 	}
 	return 500
 }
 
 // LockoutsMaxFromEnv reads RATELIMIT_LOCKOUTS_MAX_ENTRIES (default 10,000).
 func LockoutsMaxFromEnv() int {
-	if s := readPositiveInt("RATELIMIT_LOCKOUTS_MAX_ENTRIES"); s > 0 {
-		return s
+	if maxEntries := readPositiveInt("RATELIMIT_LOCKOUTS_MAX_ENTRIES"); maxEntries > 0 {
+		return maxEntries
 	}
 	return 10_000
 }
@@ -108,25 +108,25 @@ func TrustProxyFromEnv() bool {
 }
 
 func readPositiveInt(key string) int {
-	v := envutil.Get(key, "")
-	if v == "" {
+	raw := envutil.Get(key, "")
+	if raw == "" {
 		return 0
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
 		return 0
 	}
-	return n
+	return parsed
 }
 
 func readNonNegativeInt(key string) int {
-	v := envutil.Get(key, "")
-	if v == "" {
+	raw := envutil.Get(key, "")
+	if raw == "" {
 		return -1
 	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed < 0 {
 		return -1
 	}
-	return n
+	return parsed
 }

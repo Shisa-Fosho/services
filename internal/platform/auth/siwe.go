@@ -148,15 +148,15 @@ func NewSIWEVerifier(cfg SIWEConfig) *SIWEVerifier {
 
 // Verify parses a SIWE message, validates the EIP-191 personal_sign signature,
 // checks the domain and expiration, and returns the checksummed signer address.
-func (v *SIWEVerifier) Verify(message string, signature string) (string, error) {
+func (verifier *SIWEVerifier) Verify(message string, signature string) (string, error) {
 	parsed, err := ParseSIWEMessage(message)
 	if err != nil {
 		return "", fmt.Errorf("parsing SIWE message: %w", err)
 	}
 
 	// Validate domain.
-	if parsed.Domain != v.cfg.Domain {
-		return "", fmt.Errorf("domain mismatch: got %q, want %q", parsed.Domain, v.cfg.Domain)
+	if parsed.Domain != verifier.cfg.Domain {
+		return "", fmt.Errorf("domain mismatch: got %q, want %q", parsed.Domain, verifier.cfg.Domain)
 	}
 
 	// Validate expiration.

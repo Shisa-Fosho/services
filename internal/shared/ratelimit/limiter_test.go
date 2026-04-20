@@ -11,46 +11,46 @@ import (
 	"github.com/Shisa-Fosho/services/internal/shared/observability"
 )
 
-// fakeClock is a test clock whose Now() returns whatever t points at.
-type fakeClock struct{ t time.Time }
+// fakeClock is a test clock whose Now() returns the stored time.
+type fakeClock struct{ now time.Time }
 
-func (f *fakeClock) Now() time.Time          { return f.t }
-func (f *fakeClock) Advance(d time.Duration) { f.t = f.t.Add(d) }
+func (clock *fakeClock) Now() time.Time          { return clock.now }
+func (clock *fakeClock) Advance(d time.Duration) { clock.now = clock.now.Add(d) }
 
 func newTestLimiter(t *testing.T, profiles []Profile) (*Limiter, *fakeClock, *observability.Metrics) {
 	t.Helper()
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	m := observability.NewUnregisteredMetrics("test")
+	clk := &fakeClock{now: time.Unix(1_700_000_000, 0)}
+	metrics := observability.NewUnregisteredMetrics("test")
 	lim, err := NewLimiter(Config{
 		Profiles:       profiles,
 		Clock:          clk.Now,
-		Metrics:        m,
+		Metrics:        metrics,
 		Logger:         zaptest.NewLogger(t),
 		SweepBatchSize: 2,
 	})
 	if err != nil {
 		t.Fatalf("NewLimiter: %v", err)
 	}
-	return lim, clk, m
+	return lim, clk, metrics
 }
 
 func TestAllowIP_WithinBurstPasses(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 3}
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 3}
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
-	for i := 0; i < 3; i++ {
+	for idx := 0; idx < 3; idx++ {
 		ok, _ := lim.AllowIP(prof, "1.2.3.4")
 		if !ok {
-			t.Fatalf("request %d: expected allow within burst", i+1)
+			t.Fatalf("request %d: expected allow within burst", idx+1)
 		}
 	}
 }
 
 func TestAllowIP_OverBudgetRejects(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 2}
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 2}
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
 	lim.AllowIP(prof, "1.2.3.4")
 	lim.AllowIP(prof, "1.2.3.4")
@@ -65,8 +65,8 @@ func TestAllowIP_OverBudgetRejects(t *testing.T) {
 
 func TestAllowIP_TokenRefillsOverTime(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(100 * time.Millisecond), Burst: 1}
-	lim, clk, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(100 * time.Millisecond), Burst: 1}
+	lim, clk, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
 	if ok, _ := lim.AllowIP(prof, "1.2.3.4"); !ok {
 		t.Fatal("first request should pass")
@@ -82,8 +82,8 @@ func TestAllowIP_TokenRefillsOverTime(t *testing.T) {
 
 func TestAllowIP_DifferentKeysIndependent(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
 	lim.AllowIP(prof, "1.1.1.1")
 	if ok, _ := lim.AllowIP(prof, "2.2.2.2"); !ok {
@@ -93,14 +93,14 @@ func TestAllowIP_DifferentKeysIndependent(t *testing.T) {
 
 func TestRecordAuthFailure_LocksAfterN(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           10,
 		MaxFailures:     3,
 		LockoutDuration: 15 * time.Minute,
 	}
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("auth")
 
 	if locked, _ := lim.IsLockedOut("1.2.3.4"); locked {
@@ -123,14 +123,14 @@ func TestRecordAuthFailure_LocksAfterN(t *testing.T) {
 
 func TestRecordAuthFailure_LockoutExpires(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           10,
 		MaxFailures:     1,
 		LockoutDuration: time.Minute,
 	}
-	lim, clk, _ := newTestLimiter(t, []Profile{p})
+	lim, clk, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("auth")
 	lim.RecordAuthFailure("1.2.3.4", prof)
 	if locked, _ := lim.IsLockedOut("1.2.3.4"); !locked {
@@ -144,10 +144,10 @@ func TestRecordAuthFailure_LockoutExpires(t *testing.T) {
 
 func TestRecordAuthFailure_NoLockoutForZeroConfig(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 10} // MaxFailures=0
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 10} // MaxFailures=0
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
-	for i := 0; i < 100; i++ {
+	for idx := 0; idx < 100; idx++ {
 		lim.RecordAuthFailure("1.2.3.4", prof)
 	}
 	if locked, _ := lim.IsLockedOut("1.2.3.4"); locked {
@@ -157,8 +157,8 @@ func TestRecordAuthFailure_NoLockoutForZeroConfig(t *testing.T) {
 
 func TestAllowIP_CapEvictsOldestFromSample(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1, MaxEntries: 3}
-	lim, clk, m := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1, MaxEntries: 3}
+	lim, clk, metrics := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
 	// Fill to cap, each with a distinct lastSeen.
 	lim.AllowIP(prof, "a")
@@ -169,7 +169,7 @@ func TestAllowIP_CapEvictsOldestFromSample(t *testing.T) {
 	clk.Advance(time.Second)
 	// 4th insertion triggers eviction.
 	lim.AllowIP(prof, "d")
-	if got := testCounterValue(t, m.RateLimitEvictedTotal.WithLabelValues("default", "ip", "cap")); got != 1 {
+	if got := testCounterValue(t, metrics.RateLimitEvictedTotal.WithLabelValues("default", "ip", "cap")); got != 1 {
 		t.Fatalf("cap eviction counter = %v, want 1", got)
 	}
 	if got := len(lim.ipEntries["default"]); got != 3 {
@@ -179,8 +179,8 @@ func TestAllowIP_CapEvictsOldestFromSample(t *testing.T) {
 
 func TestSweep_EvictsStaleEntries(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 5}
-	lim, clk, m := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 5}
+	lim, clk, metrics := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("default")
 	lim.AllowIP(prof, "stale")
 	// Advance well past 2× refill window (5s × 2 = 10s).
@@ -193,21 +193,21 @@ func TestSweep_EvictsStaleEntries(t *testing.T) {
 	if _, ok := lim.ipEntries["default"]["fresh"]; !ok {
 		t.Fatal("fresh key should survive")
 	}
-	if got := testCounterValue(t, m.RateLimitEvictedTotal.WithLabelValues("default", "ip", "sweep")); got != 1 {
+	if got := testCounterValue(t, metrics.RateLimitEvictedTotal.WithLabelValues("default", "ip", "sweep")); got != 1 {
 		t.Fatalf("sweep eviction counter = %v, want 1", got)
 	}
 }
 
 func TestSweep_ExpiredLockoutsRemoved(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           5,
 		MaxFailures:     1,
 		LockoutDuration: time.Minute,
 	}
-	lim, clk, _ := newTestLimiter(t, []Profile{p})
+	lim, clk, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("auth")
 	lim.RecordAuthFailure("1.1.1.1", prof)
 	clk.Advance(2 * time.Minute)
@@ -219,14 +219,14 @@ func TestSweep_ExpiredLockoutsRemoved(t *testing.T) {
 
 func TestSweep_ExpiresFailuresBelowThreshold(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           5,
 		MaxFailures:     5,
 		LockoutDuration: time.Minute,
 	}
-	lim, clk, _ := newTestLimiter(t, []Profile{p})
+	lim, clk, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("auth")
 	lim.RecordAuthFailure("1.1.1.1", prof)
 	lim.RecordAuthFailure("1.1.1.1", prof)
@@ -242,14 +242,14 @@ func TestSweep_ExpiresFailuresBelowThreshold(t *testing.T) {
 
 func TestRecordAuthFailure_StaleCountResets(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           10,
 		MaxFailures:     3,
 		LockoutDuration: time.Minute,
 	}
-	lim, clk, _ := newTestLimiter(t, []Profile{p})
+	lim, clk, _ := newTestLimiter(t, []Profile{profile})
 	prof, _ := lim.Profile("auth")
 	lim.RecordAuthFailure("1.1.1.1", prof)
 	lim.RecordAuthFailure("1.1.1.1", prof)
@@ -263,8 +263,8 @@ func TestRecordAuthFailure_StaleCountResets(t *testing.T) {
 
 func TestStart_ExitsOnContextCancel(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
-	lim, _, _ := newTestLimiter(t, []Profile{p})
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
+	lim, _, _ := newTestLimiter(t, []Profile{profile})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { lim.Start(ctx, 10*time.Millisecond); close(done) }()

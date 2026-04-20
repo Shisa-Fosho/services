@@ -23,11 +23,11 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 // CreateReferral persists a new referral. Validates input via ValidateReferral
 // before persisting. Also checks for circular referrals (B→A already exists
 // when inserting A→B) inside the same transaction.
-func (r *PGRepository) CreateReferral(ctx context.Context, ref *Referral) error {
+func (repo *PGRepository) CreateReferral(ctx context.Context, ref *Referral) error {
 	if err := ValidateReferral(ref); err != nil {
 		return fmt.Errorf("creating referral: %w", err)
 	}
-	tx, err := r.pool.Begin(ctx)
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("creating referral: beginning transaction: %w", err)
 	}
@@ -72,11 +72,11 @@ func (r *PGRepository) CreateReferral(ctx context.Context, ref *Referral) error 
 // RecordEarning persists a new affiliate earning. Validates input via
 // ValidateEarning before persisting. Returns ErrDuplicateEarning if the trade
 // ID already exists.
-func (r *PGRepository) RecordEarning(ctx context.Context, earning *Earning) error {
+func (repo *PGRepository) RecordEarning(ctx context.Context, earning *Earning) error {
 	if err := ValidateEarning(earning); err != nil {
 		return fmt.Errorf("recording earning: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO affiliate_earnings (referrer_address, trade_id, fee_amount, referrer_cut)
 		 VALUES ($1, $2, $3, $4)`,
 		earning.ReferrerAddress, earning.TradeID,
@@ -93,8 +93,8 @@ func (r *PGRepository) RecordEarning(ctx context.Context, earning *Earning) erro
 }
 
 // GetEarningsByReferrer returns all earnings for a referrer.
-func (r *PGRepository) GetEarningsByReferrer(ctx context.Context, referrerAddress string) ([]*Earning, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetEarningsByReferrer(ctx context.Context, referrerAddress string) ([]*Earning, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM affiliate_earnings WHERE referrer_address = $1 ORDER BY created_at DESC`,
 		referrerAddress,
 	)
@@ -110,9 +110,9 @@ func (r *PGRepository) GetEarningsByReferrer(ctx context.Context, referrerAddres
 
 // GetClaimableBalance returns the aggregate claimable balance for a referrer.
 // Returns a zero-value balance if no earnings exist.
-func (r *PGRepository) GetClaimableBalance(ctx context.Context, referrerAddress string) (*ClaimableBalance, error) {
+func (repo *PGRepository) GetClaimableBalance(ctx context.Context, referrerAddress string) (*ClaimableBalance, error) {
 	var total int64
-	err := r.pool.QueryRow(ctx,
+	err := repo.pool.QueryRow(ctx,
 		`SELECT COALESCE(SUM(referrer_cut), 0) FROM affiliate_earnings
 		 WHERE referrer_address = $1`, referrerAddress,
 	).Scan(&total)
