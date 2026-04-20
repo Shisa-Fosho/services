@@ -15,6 +15,11 @@ type Metrics struct {
 	MatchesTotal     prometheus.Counter // Matched trades.
 	SettlementsTotal prometheus.Counter // On-chain settlements.
 	DBErrorTotal     prometheus.Counter // Database errors.
+
+	RateLimitRejectedTotal        *prometheus.CounterVec // Rejected requests by profile and key type.
+	RateLimitLockoutTotal         prometheus.Counter     // Lockouts triggered.
+	RateLimitEvictedTotal         *prometheus.CounterVec // Entries evicted by profile, key type, and reason (cap|sweep).
+	RateLimitSweepDurationSeconds prometheus.Histogram   // Sweeper run duration; climb signals need for sharding.
 }
 
 // NewMetrics creates and registers metrics for a service.
@@ -56,14 +61,54 @@ func NewMetrics(serviceName string) *Metrics {
 		ConstLabels: prometheus.Labels{"service": serviceName},
 	})
 
-	prometheus.MustRegister(requestTotal, requestDuration, matchesTotal, settlementsTotal, dbErrorTotal)
+	rateLimitRejectedTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name:        "ratelimit_rejected_total",
+			Help:        "Requests rejected by the rate limiter",
+			ConstLabels: prometheus.Labels{"service": serviceName},
+		},
+		[]string{"profile", "key_type"},
+	)
+
+	rateLimitLockoutTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name:        "ratelimit_lockout_total",
+		Help:        "Lockouts triggered after repeated auth failures",
+		ConstLabels: prometheus.Labels{"service": serviceName},
+	})
+
+	rateLimitEvictedTotal := prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name:        "ratelimit_evicted_total",
+			Help:        "Rate limiter entries evicted",
+			ConstLabels: prometheus.Labels{"service": serviceName},
+		},
+		[]string{"profile", "key_type", "reason"},
+	)
+
+	rateLimitSweepDurationSeconds := prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:        "ratelimit_sweep_duration_seconds",
+		Help:        "Duration of rate limiter sweeper runs",
+		Buckets:     []float64{0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1},
+		ConstLabels: prometheus.Labels{"service": serviceName},
+	})
+
+	prometheus.MustRegister(
+		requestTotal, requestDuration,
+		matchesTotal, settlementsTotal, dbErrorTotal,
+		rateLimitRejectedTotal, rateLimitLockoutTotal,
+		rateLimitEvictedTotal, rateLimitSweepDurationSeconds,
+	)
 
 	return &Metrics{
-		RequestTotal:     requestTotal,
-		RequestDuration:  requestDuration,
-		MatchesTotal:     matchesTotal,
-		SettlementsTotal: settlementsTotal,
-		DBErrorTotal:     dbErrorTotal,
+		RequestTotal:                  requestTotal,
+		RequestDuration:               requestDuration,
+		MatchesTotal:                  matchesTotal,
+		SettlementsTotal:              settlementsTotal,
+		DBErrorTotal:                  dbErrorTotal,
+		RateLimitRejectedTotal:        rateLimitRejectedTotal,
+		RateLimitLockoutTotal:         rateLimitLockoutTotal,
+		RateLimitEvictedTotal:         rateLimitEvictedTotal,
+		RateLimitSweepDurationSeconds: rateLimitSweepDurationSeconds,
 	}
 }
 

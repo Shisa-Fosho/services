@@ -37,6 +37,22 @@ const (
 // Replay protection within this window is accepted as a Polymarket-compatible trade-off.
 const maxTimestampDrift = 5 * time.Second
 
+// MiddlewareOption configures an AuthenticateAPIKey middleware chain.
+type MiddlewareOption func(*middlewareOptions)
+
+type middlewareOptions struct {
+	onAuthFailure func(*http.Request)
+}
+
+// WithAuthFailureHook registers a callback invoked on credential-verify
+// failures: unknown API key, passphrase mismatch, timestamp drift, HMAC
+// signature mismatch, secret decrypt/decode failures. Does NOT fire on shape
+// errors (missing POLY_API_KEY, missing signature headers, invalid-timestamp
+// parse, body read error) — those are probes, not brute-force attempts.
+func WithAuthFailureHook(fn func(*http.Request)) MiddlewareOption {
+	return func(o *middlewareOptions) { o.onAuthFailure = fn }
+}
+
 // AuthenticateAPIKey returns HTTP middleware that validates an L2 HMAC-signed
 // request (POLY_API_KEY, POLY_SIGNATURE, POLY_TIMESTAMP, POLY_PASSPHRASE)
 // against a stored API key looked up via the reader. Used by Polymarket-compat
@@ -46,7 +62,11 @@ const maxTimestampDrift = 5 * time.Second
 // This middleware is HMAC-only. It does NOT fall back to JWT. A JWT bearer
 // token on a CLOB-protected route is rejected with 401 — enforcement of the
 // architectural rule that CLOB endpoints speak HMAC exclusively.
-func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.Logger) func(http.Handler) http.Handler {
+func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.Logger, opts ...MiddlewareOption) func(http.Handler) http.Handler {
+	o := &middlewareOptions{}
+	for _, fn := range opts {
+		fn(o)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := r.Header.Get(HeaderAPIKey)
@@ -54,7 +74,7 @@ func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.L
 				httputil.ErrorResponse(w, http.StatusUnauthorized, "missing POLY_API_KEY header (this endpoint requires L2 HMAC auth)")
 				return
 			}
-			address, ok := authenticateAPIKey(w, r, apiKey, reader, encryptionKey, logger)
+			address, ok := authenticateAPIKey(w, r, apiKey, reader, encryptionKey, logger, o.onAuthFailure)
 			if !ok {
 				return
 			}
@@ -66,7 +86,15 @@ func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.L
 
 // authenticateAPIKey validates an HMAC-signed API key request. Returns the
 // user address on success, or writes a 401 response and returns false.
-func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, reader APIKeyReader, encryptionKey []byte, logger *zap.Logger) (string, bool) {
+// onAuthFailure (if non-nil) fires only on credential-verify failures — see
+// WithAuthFailureHook for the precise classification.
+func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, reader APIKeyReader, encryptionKey []byte, logger *zap.Logger, onAuthFailure func(*http.Request)) (string, bool) {
+	fail := func() {
+		if onAuthFailure != nil {
+			onAuthFailure(r)
+		}
+	}
+
 	timestamp := r.Header.Get(HeaderTimestamp)
 	signature := r.Header.Get(HeaderSignature)
 
@@ -82,6 +110,7 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 		return "", false
 	}
 	if drift := time.Since(time.Unix(ts, 0)).Abs(); drift > maxTimestampDrift {
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "timestamp drift too large")
 		return "", false
 	}
@@ -91,6 +120,7 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 	stored, err := reader.GetAPIKeyByHash(r.Context(), keyHash)
 	if err != nil {
 		logger.Debug("api key lookup failed", zap.Error(err))
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
 		return "", false
 	}
@@ -98,6 +128,7 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 	// Verify passphrase (second factor alongside HMAC secret).
 	passphrase := r.Header.Get(HeaderPassphrase)
 	if !hmac.Equal([]byte(HashAPIKey(passphrase)), []byte(stored.PassphraseHash)) {
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid passphrase")
 		return "", false
 	}
@@ -108,12 +139,14 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 	secret, err := DecryptSecret(encryptionKey, stored.HMACSecretEncrypted)
 	if err != nil {
 		logger.Error("decrypting hmac secret", zap.Error(err))
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
 		return "", false
 	}
 	secretBytes, err := base64.URLEncoding.DecodeString(secret)
 	if err != nil {
 		logger.Error("decoding hmac secret", zap.Error(err))
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
 		return "", false
 	}
@@ -126,6 +159,7 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
 	if !VerifyHMACSignature(secretBytes, timestamp, r.Method, r.URL.Path, string(body), signature) {
+		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid signature")
 		return "", false
 	}

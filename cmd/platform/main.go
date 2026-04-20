@@ -24,6 +24,7 @@ import (
 	sharednats "github.com/Shisa-Fosho/services/internal/shared/nats"
 	"github.com/Shisa-Fosho/services/internal/shared/observability"
 	"github.com/Shisa-Fosho/services/internal/shared/postgres"
+	"github.com/Shisa-Fosho/services/internal/shared/ratelimit"
 	platformv1 "github.com/Shisa-Fosho/services/proto/gen/platform/v1"
 )
 
@@ -116,7 +117,31 @@ func run() error {
 
 	repo := data.NewPGRepository(pool)
 	secureCookies := siweDomain != "localhost"
-	sessionHandler := platformauth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies)
+
+	// Rate limiter: shared across all endpoints, with a strict "auth" profile
+	// wrapping credential-verify routes and a "default" IP-keyed backstop
+	// wrapping the whole service.
+	trustProxy := ratelimit.TrustProxyFromEnv()
+	limiter, err := ratelimit.NewLimiter(ratelimit.Config{
+		Profiles:           ratelimit.LoadProfilesFromEnv(),
+		UserExtractor:      platformauth.UserAddressFrom,
+		TrustProxyHeaders:  trustProxy,
+		Metrics:            metrics,
+		Logger:             logger,
+		LockoutsMaxEntries: ratelimit.LockoutsMaxFromEnv(),
+		SweepBatchSize:     ratelimit.SweepBatchSizeFromEnv(),
+	})
+	if err != nil {
+		return fmt.Errorf("creating rate limiter: %w", err)
+	}
+	go limiter.Start(ctx, ratelimit.SweepIntervalFromEnv())
+
+	authProfile, _ := limiter.Profile("auth")
+	sessionHandler := platformauth.NewHandler(logger, repo, jwtMgr, siweVerifier, safeCfg, secureCookies,
+		platformauth.WithHandlerAuthFailureHook(func(r *http.Request) {
+			limiter.RecordAuthFailure(ratelimit.ClientIP(r, trustProxy), authProfile)
+		}),
+	)
 
 	// gRPC server.
 	hs := health.NewServer()
@@ -133,11 +158,15 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
-	sessionHandler.RegisterRoutes(mux)
+	sessionHandler.RegisterRoutes(mux, limiter.Middleware("auth", ratelimit.KeyByIP))
 
-	// Middleware stack (outermost first): Recovery → RequestID → Logging.
+	// Middleware stack (outermost first):
+	//   Recovery → RequestID → RateLimit(default,IP) → Logging → mux
+	// The default limiter sits inside RequestID (so 429s carry X-Request-ID)
+	// and outside Logging (so rejected requests are still logged).
 	var handler http.Handler = mux
 	handler = httputil.Logging(logger)(handler)
+	handler = limiter.Middleware("default", ratelimit.KeyByIP)(handler)
 	handler = httputil.RequestID(handler)
 	handler = httputil.Recovery(logger)(handler)
 
