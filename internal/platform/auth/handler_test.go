@@ -21,11 +21,11 @@ type fakeVerifier struct {
 	err     error
 }
 
-func (f *fakeVerifier) Verify(message, signature string) (string, error) {
-	if f.err != nil {
-		return "", f.err
+func (verifier *fakeVerifier) Verify(message, signature string) (string, error) {
+	if verifier.err != nil {
+		return "", verifier.err
 	}
-	return f.address, nil
+	return verifier.address, nil
 }
 
 // fakeRepo is an in-memory SessionRepository implementation for tests. It
@@ -43,65 +43,65 @@ func newFakeRepo() *fakeRepo {
 	}
 }
 
-func (r *fakeRepo) CreateUser(_ context.Context, user *data.User) error {
-	if _, exists := r.users[user.Address]; exists {
+func (store *fakeRepo) CreateUser(_ context.Context, user *data.User) error {
+	if _, exists := store.users[user.Address]; exists {
 		return data.ErrDuplicateUser
 	}
-	r.users[user.Address] = user
+	store.users[user.Address] = user
 	return nil
 }
 
-func (r *fakeRepo) GetUserByAddress(_ context.Context, address string) (*data.User, error) {
-	u, ok := r.users[address]
+func (store *fakeRepo) GetUserByAddress(_ context.Context, address string) (*data.User, error) {
+	user, ok := store.users[address]
 	if !ok {
 		return nil, data.ErrNotFound
 	}
-	return u, nil
+	return user, nil
 }
 
-func (r *fakeRepo) GetUserByEmail(_ context.Context, email string) (*data.User, error) {
-	for _, u := range r.users {
-		if u.Email != nil && *u.Email == email {
-			return u, nil
+func (store *fakeRepo) GetUserByEmail(_ context.Context, email string) (*data.User, error) {
+	for _, user := range store.users {
+		if user.Email != nil && *user.Email == email {
+			return user, nil
 		}
 	}
 	return nil, data.ErrNotFound
 }
 
-func (r *fakeRepo) UpsertPosition(_ context.Context, _ *data.Position) error { return nil }
-func (r *fakeRepo) GetPositionsByUser(_ context.Context, _ string) ([]*data.Position, error) {
+func (store *fakeRepo) UpsertPosition(_ context.Context, _ *data.Position) error { return nil }
+func (store *fakeRepo) GetPositionsByUser(_ context.Context, _ string) ([]*data.Position, error) {
 	return nil, nil
 }
-func (r *fakeRepo) GetPosition(_ context.Context, _ string, _ string, _ data.Side) (*data.Position, error) {
+func (store *fakeRepo) GetPosition(_ context.Context, _ string, _ string, _ data.Side) (*data.Position, error) {
 	return nil, data.ErrNotFound
 }
 
-func (r *fakeRepo) StoreRefreshToken(_ context.Context, token *data.RefreshToken) error {
-	r.refreshTokens[token.ID] = token
+func (store *fakeRepo) StoreRefreshToken(_ context.Context, token *data.RefreshToken) error {
+	store.refreshTokens[token.ID] = token
 	return nil
 }
 
-func (r *fakeRepo) GetRefreshToken(_ context.Context, id string) (*data.RefreshToken, error) {
-	t, ok := r.refreshTokens[id]
+func (store *fakeRepo) GetRefreshToken(_ context.Context, id string) (*data.RefreshToken, error) {
+	token, ok := store.refreshTokens[id]
 	if !ok {
 		return nil, data.ErrNotFound
 	}
-	return t, nil
+	return token, nil
 }
 
-func (r *fakeRepo) RevokeRefreshToken(_ context.Context, id string) error {
-	t, ok := r.refreshTokens[id]
+func (store *fakeRepo) RevokeRefreshToken(_ context.Context, id string) error {
+	token, ok := store.refreshTokens[id]
 	if !ok {
 		return data.ErrNotFound
 	}
-	t.Revoked = true
+	token.Revoked = true
 	return nil
 }
 
-func (r *fakeRepo) RevokeAllRefreshTokens(_ context.Context, userAddress string) error {
-	for _, t := range r.refreshTokens {
-		if t.UserAddress == userAddress {
-			t.Revoked = true
+func (store *fakeRepo) RevokeAllRefreshTokens(_ context.Context, userAddress string) error {
+	for _, token := range store.refreshTokens {
+		if token.UserAddress == userAddress {
+			token.Revoked = true
 		}
 	}
 	return nil
@@ -127,19 +127,19 @@ func TestSignupWallet_Success(t *testing.T) {
 	addr := "0x1234567890AbcdEF1234567890aBcdef12345678"
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{address: addr}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	body := `{"message":"test","signature":"0xtest","username":"alice"}`
-	r := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
 
-	h.signupWallet(w, r)
+	handler.signupWallet(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	var resp authResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	json.NewDecoder(recorder.Body).Decode(&resp)
 	if resp.AccessToken == "" {
 		t.Error("expected non-empty access token")
 	}
@@ -150,12 +150,12 @@ func TestSignupWallet_Success(t *testing.T) {
 		t.Error("expected non-empty safe address")
 	}
 
-	cookies := w.Result().Cookies()
+	cookies := recorder.Result().Cookies()
 	found := false
-	for _, c := range cookies {
-		if c.Name == refreshCookieName {
+	for _, cookie := range cookies {
+		if cookie.Name == refreshCookieName {
 			found = true
-			if !c.HttpOnly {
+			if !cookie.HttpOnly {
 				t.Error("refresh cookie should be HttpOnly")
 			}
 		}
@@ -172,16 +172,16 @@ func TestSignupWallet_DuplicateUser(t *testing.T) {
 	repo := newFakeRepo()
 	repo.users[addr] = &data.User{Address: addr, Username: "alice"}
 	verifier := &fakeVerifier{address: addr}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	body := `{"message":"test","signature":"0xtest","username":"bob"}`
-	r := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
 
-	h.signupWallet(w, r)
+	handler.signupWallet(recorder, request)
 
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	if recorder.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusConflict)
 	}
 }
 
@@ -190,16 +190,16 @@ func TestSignupWallet_MissingUsername(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{address: "0x1111111111111111111111111111111111111111"}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	body := `{"message":"test","signature":"0xtest"}`
-	r := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/signup/wallet", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
 
-	h.signupWallet(w, r)
+	handler.signupWallet(recorder, request)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 
@@ -214,16 +214,16 @@ func TestLoginWallet_Success(t *testing.T) {
 		SafeAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	}
 	verifier := &fakeVerifier{address: addr}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	body := `{"message":"test","signature":"0xtest"}`
-	r := httptest.NewRequest(http.MethodPost, "/auth/login/wallet", strings.NewReader(body))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/login/wallet", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
 
-	h.loginWallet(w, r)
+	handler.loginWallet(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 }
 
@@ -232,16 +232,16 @@ func TestLoginWallet_UnknownUser(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{address: "0x1111111111111111111111111111111111111111"}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	body := `{"message":"test","signature":"0xtest"}`
-	r := httptest.NewRequest(http.MethodPost, "/auth/login/wallet", strings.NewReader(body))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/login/wallet", strings.NewReader(body))
+	recorder := httptest.NewRecorder()
 
-	h.loginWallet(w, r)
+	handler.loginWallet(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -260,16 +260,16 @@ func TestRefresh_Success(t *testing.T) {
 	}
 
 	verifier := &fakeVerifier{address: addr}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: tokenStr})
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	request.AddCookie(&http.Cookie{Name: refreshCookieName, Value: tokenStr})
+	recorder := httptest.NewRecorder()
 
-	h.refresh(w, r)
+	handler.refresh(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	if !repo.refreshTokens[jti].Revoked {
 		t.Error("old refresh token should be revoked after rotation")
@@ -292,16 +292,16 @@ func TestRefresh_RevokedToken(t *testing.T) {
 	}
 
 	verifier := &fakeVerifier{address: addr}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	r.AddCookie(&http.Cookie{Name: refreshCookieName, Value: tokenStr})
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	request.AddCookie(&http.Cookie{Name: refreshCookieName, Value: tokenStr})
+	recorder := httptest.NewRecorder()
 
-	h.refresh(w, r)
+	handler.refresh(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -310,15 +310,15 @@ func TestRefresh_MissingCookie(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/refresh", nil)
+	recorder := httptest.NewRecorder()
 
-	h.refresh(w, r)
+	handler.refresh(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -327,20 +327,20 @@ func TestLogout_ClearsCookie(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	recorder := httptest.NewRecorder()
 
-	h.logout(w, r)
+	handler.logout(recorder, request)
 
-	if w.Code != http.StatusNoContent {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+	if recorder.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusNoContent)
 	}
 
-	cookies := w.Result().Cookies()
-	for _, c := range cookies {
-		if c.Name == refreshCookieName && c.MaxAge != -1 {
+	cookies := recorder.Result().Cookies()
+	for _, cookie := range cookies {
+		if cookie.Name == refreshCookieName && cookie.MaxAge != -1 {
 			t.Error("refresh cookie should have MaxAge -1")
 		}
 	}
@@ -358,19 +358,19 @@ func TestSession_Valid(t *testing.T) {
 	}
 
 	verifier := &fakeVerifier{}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
-	r = r.WithContext(WithUserAddress(r.Context(), addr))
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	request = request.WithContext(WithUserAddress(request.Context(), addr))
+	recorder := httptest.NewRecorder()
 
-	h.session(w, r)
+	handler.session(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body: %s", w.Code, http.StatusOK, w.Body.String())
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	var resp sessionResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	json.NewDecoder(recorder.Body).Decode(&resp)
 	if resp.Address != addr {
 		t.Errorf("address = %q, want %q", resp.Address, addr)
 	}
@@ -384,19 +384,19 @@ func TestSession_InvalidToken(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, nil)
+	handler.RegisterRoutes(mux, nil)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
-	r.Header.Set("Authorization", "Bearer invalid-token")
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
+	request.Header.Set("Authorization", "Bearer invalid-token")
+	recorder := httptest.NewRecorder()
 
-	mux.ServeHTTP(w, r)
+	mux.ServeHTTP(recorder, request)
 
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
 }
 
@@ -405,18 +405,18 @@ func TestNonce_ReturnsNonce(t *testing.T) {
 
 	repo := newFakeRepo()
 	verifier := &fakeVerifier{}
-	h := testHandler(t, repo, verifier)
+	handler := testHandler(t, repo, verifier)
 
-	r := httptest.NewRequest(http.MethodGet, "/auth/nonce", nil)
-	w := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/auth/nonce", nil)
+	recorder := httptest.NewRecorder()
 
-	h.nonce(w, r)
+	handler.nonce(recorder, request)
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
 	}
 	var resp nonceResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	json.NewDecoder(recorder.Body).Decode(&resp)
 	if resp.Nonce == "" {
 		t.Error("expected non-empty nonce")
 	}

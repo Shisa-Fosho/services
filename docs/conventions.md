@@ -21,7 +21,11 @@
 ### Naming
 - MixedCaps/camelCase (never underscores in Go identifiers)
 - Interface names: method name + "er" suffix for single-method interfaces (e.g., `Reader`, `Matcher`)
-- Receiver names: short, 1-2 chars, consistent within type (e.g., `s` for Server, `r` for Repository, `e` for Engine)
+- **All names (variables, parameters, receivers, struct fields, locals — anything that needs a name) must use full or, at worst, partial words that convey meaning.** Single-letter and 1-2 char abbreviations are prohibited. Examples:
+  - Receivers: `server` (not `s`), `repo` (not `r`), `engine` (not `e`), `handler` (not `h`), `book` (not `b`)
+  - Locals: `user` (not `u`), `order` (not `o`), `err` is allowed (idiomatic Go), `ctx` is allowed (idiomatic Go)
+  - Loop variables: `idx`/`index` (not `i`), `item` (not `v`) — even short loops should be readable
+  - The only exceptions are the universally idiomatic Go names: `ctx` (context.Context), `err` (error), `tx` (transaction), `ok` (bool from comma-ok idiom), `w`/`r` ONLY when they are `http.ResponseWriter` / `*http.Request` in a handler signature (standard library idiom)
 - Package names: short, lowercase, no underscores, no plural (e.g., `market`, `trading`, `settlement`)
 
 ### Error Handling

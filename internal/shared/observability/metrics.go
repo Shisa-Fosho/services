@@ -113,6 +113,6 @@ func NewMetrics(serviceName string) *Metrics {
 }
 
 // Handler returns the Prometheus metrics HTTP handler.
-func (m *Metrics) Handler() http.Handler {
+func (metrics *Metrics) Handler() http.Handler {
 	return promhttp.Handler()
 }

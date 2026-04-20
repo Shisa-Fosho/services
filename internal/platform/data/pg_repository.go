@@ -24,11 +24,11 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 // CreateUser persists a new user. Validates input via ValidateUser before
 // persisting. Returns ErrInvalidUser for shape violations, ErrDuplicateUser
 // if the address, username, or email already exists.
-func (r *PGRepository) CreateUser(ctx context.Context, user *User) error {
+func (repo *PGRepository) CreateUser(ctx context.Context, user *User) error {
 	if err := ValidateUser(user); err != nil {
 		return fmt.Errorf("creating user: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO users (
 			address, username, email, signup_method, safe_address,
 			proxy_address, twofa_secret_encrypted, twofa_enabled
@@ -47,8 +47,8 @@ func (r *PGRepository) CreateUser(ctx context.Context, user *User) error {
 }
 
 // GetUserByAddress retrieves a user by Ethereum address.
-func (r *PGRepository) GetUserByAddress(ctx context.Context, address string) (*User, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM users WHERE address = $1`, address)
+func (repo *PGRepository) GetUserByAddress(ctx context.Context, address string) (*User, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM users WHERE address = $1`, address)
 	if err != nil {
 		return nil, fmt.Errorf("getting user %s: %w", address, err)
 	}
@@ -63,8 +63,8 @@ func (r *PGRepository) GetUserByAddress(ctx context.Context, address string) (*U
 }
 
 // GetUserByEmail retrieves a user by email address.
-func (r *PGRepository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM users WHERE email = $1`, email)
+func (repo *PGRepository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM users WHERE email = $1`, email)
 	if err != nil {
 		return nil, fmt.Errorf("getting user by email: %w", err)
 	}
@@ -80,11 +80,11 @@ func (r *PGRepository) GetUserByEmail(ctx context.Context, email string) (*User,
 
 // UpsertPosition creates or updates a position for a user in a market.
 // Validates input via ValidatePosition before persisting.
-func (r *PGRepository) UpsertPosition(ctx context.Context, pos *Position) error {
+func (repo *PGRepository) UpsertPosition(ctx context.Context, pos *Position) error {
 	if err := ValidatePosition(pos); err != nil {
 		return fmt.Errorf("upserting position: %w", err)
 	}
-	_, err := r.pool.Exec(ctx,
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO positions (user_address, market_id, side, size, average_entry_price, realised_pnl)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 ON CONFLICT (user_address, market_id, side)
@@ -102,8 +102,8 @@ func (r *PGRepository) UpsertPosition(ctx context.Context, pos *Position) error 
 }
 
 // GetPositionsByUser returns all positions for a given user address.
-func (r *PGRepository) GetPositionsByUser(ctx context.Context, userAddress string) ([]*Position, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetPositionsByUser(ctx context.Context, userAddress string) ([]*Position, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM positions WHERE user_address = $1 ORDER BY market_id`,
 		userAddress,
 	)
@@ -118,8 +118,8 @@ func (r *PGRepository) GetPositionsByUser(ctx context.Context, userAddress strin
 }
 
 // GetPosition retrieves a single position by its composite key.
-func (r *PGRepository) GetPosition(ctx context.Context, userAddress string, marketID string, side Side) (*Position, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetPosition(ctx context.Context, userAddress string, marketID string, side Side) (*Position, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM positions WHERE user_address = $1 AND market_id = $2 AND side = $3`,
 		userAddress, marketID, side,
 	)
@@ -140,8 +140,8 @@ func (r *PGRepository) GetPosition(ctx context.Context, userAddress string, mark
 }
 
 // StoreRefreshToken persists a new refresh token.
-func (r *PGRepository) StoreRefreshToken(ctx context.Context, token *RefreshToken) error {
-	_, err := r.pool.Exec(ctx,
+func (repo *PGRepository) StoreRefreshToken(ctx context.Context, token *RefreshToken) error {
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO refresh_tokens (id, user_address, expires_at)
 		 VALUES ($1, $2, $3)`,
 		token.ID, token.UserAddress, token.ExpiresAt,
@@ -153,8 +153,8 @@ func (r *PGRepository) StoreRefreshToken(ctx context.Context, token *RefreshToke
 }
 
 // GetRefreshToken retrieves a refresh token by ID.
-func (r *PGRepository) GetRefreshToken(ctx context.Context, id string) (*RefreshToken, error) {
-	rows, err := r.pool.Query(ctx,
+func (repo *PGRepository) GetRefreshToken(ctx context.Context, id string) (*RefreshToken, error) {
+	rows, err := repo.pool.Query(ctx,
 		`SELECT * FROM refresh_tokens WHERE id = $1`, id,
 	)
 	if err != nil {
@@ -171,8 +171,8 @@ func (r *PGRepository) GetRefreshToken(ctx context.Context, id string) (*Refresh
 }
 
 // RevokeRefreshToken marks a refresh token as revoked.
-func (r *PGRepository) RevokeRefreshToken(ctx context.Context, id string) error {
-	tag, err := r.pool.Exec(ctx,
+func (repo *PGRepository) RevokeRefreshToken(ctx context.Context, id string) error {
+	tag, err := repo.pool.Exec(ctx,
 		`UPDATE refresh_tokens SET revoked = true WHERE id = $1`, id,
 	)
 	if err != nil {
@@ -185,8 +185,8 @@ func (r *PGRepository) RevokeRefreshToken(ctx context.Context, id string) error 
 }
 
 // RevokeAllRefreshTokens revokes all active refresh tokens for a user.
-func (r *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddress string) error {
-	_, err := r.pool.Exec(ctx,
+func (repo *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddress string) error {
+	_, err := repo.pool.Exec(ctx,
 		`UPDATE refresh_tokens SET revoked = true
 		 WHERE user_address = $1 AND revoked = false`, userAddress,
 	)

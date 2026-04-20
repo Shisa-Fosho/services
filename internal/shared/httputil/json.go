@@ -16,8 +16,8 @@ const maxBodySize = 1 << 20
 // DecodeJSON reads the request body as JSON into dst. It enforces a 1 MB size
 // limit and rejects unknown fields. Returns an error suitable for direct use
 // in an ErrorResponse if the body is empty, oversized, or malformed.
-func DecodeJSON(r *http.Request, dst any) error {
-	reader := http.MaxBytesReader(nil, r.Body, maxBodySize)
+func DecodeJSON(request *http.Request, dst any) error {
+	reader := http.MaxBytesReader(nil, request.Body, maxBodySize)
 	defer func() { _ = reader.Close() }()
 
 	dec := json.NewDecoder(reader)
@@ -38,10 +38,10 @@ func DecodeJSON(r *http.Request, dst any) error {
 
 // EncodeJSON writes data as a JSON response with the given HTTP status code.
 // Sets Content-Type to application/json before writing the status header.
-func EncodeJSON(w http.ResponseWriter, status int, data any) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
+func EncodeJSON(writer http.ResponseWriter, status int, data any) error {
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	if err := json.NewEncoder(writer).Encode(data); err != nil {
 		return fmt.Errorf("encoding JSON response: %w", err)
 	}
 	return nil
@@ -54,6 +54,6 @@ type errorEnvelope struct {
 
 // ErrorResponse writes a JSON error response with the given status code
 // and message. Uses the standard {"error": "..."} envelope.
-func ErrorResponse(w http.ResponseWriter, status int, msg string) {
-	_ = EncodeJSON(w, status, errorEnvelope{Error: msg})
+func ErrorResponse(writer http.ResponseWriter, status int, msg string) {
+	_ = EncodeJSON(writer, status, errorEnvelope{Error: msg})
 }

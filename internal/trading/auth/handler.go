@@ -33,22 +33,22 @@ type HandlerOption func(*Handler)
 // WithHandlerAuthFailureHook sets a callback invoked on EIP-712 sig
 // verification failure inside /auth/derive-api-key. Used to drive rate-limiter
 // lockout. Not invoked on shape errors (missing required headers).
-func WithHandlerAuthFailureHook(fn func(*http.Request)) HandlerOption {
-	return func(h *Handler) { h.onAuthFailure = fn }
+func WithHandlerAuthFailureHook(hook func(*http.Request)) HandlerOption {
+	return func(handler *Handler) { handler.onAuthFailure = hook }
 }
 
 // NewHandler creates an API-key handler.
 func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg APIKeyConfig, opts ...HandlerOption) *Handler {
-	h := &Handler{
+	handler := &Handler{
 		logger:    logger,
 		repo:      repo,
 		encKey:    apiKeyCfg.EncryptionKey,
 		apiKeyCfg: apiKeyCfg,
 	}
-	for _, fn := range opts {
-		fn(h)
+	for _, option := range opts {
+		option(handler)
 	}
-	return h
+	return handler
 }
 
 // RegisterRoutes registers the three API-key lifecycle endpoints on the mux.
@@ -59,32 +59,32 @@ func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg APIKeyConfi
 // Auth-wise:
 //   - derive is L1-authenticated (EIP-712 wallet sig) — the handler verifies.
 //   - list and revoke are L2-authenticated (HMAC) — wrapped in AuthenticateAPIKey.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
+func (handler *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
 	hmacOpts := []MiddlewareOption{}
-	if h.onAuthFailure != nil {
-		hmacOpts = append(hmacOpts, WithAuthFailureHook(h.onAuthFailure))
+	if handler.onAuthFailure != nil {
+		hmacOpts = append(hmacOpts, WithAuthFailureHook(handler.onAuthFailure))
 	}
 
-	derive := wrap(authWrapper, http.HandlerFunc(h.deriveAPIKey))
-	list := wrap(authWrapper, AuthenticateAPIKey(h.repo, h.encKey, h.logger, hmacOpts...)(http.HandlerFunc(h.listAPIKeys)))
-	revoke := wrap(authWrapper, AuthenticateAPIKey(h.repo, h.encKey, h.logger, hmacOpts...)(http.HandlerFunc(h.revokeAPIKey)))
+	derive := wrap(authWrapper, http.HandlerFunc(handler.deriveAPIKey))
+	list := wrap(authWrapper, AuthenticateAPIKey(handler.repo, handler.encKey, handler.logger, hmacOpts...)(http.HandlerFunc(handler.listAPIKeys)))
+	revoke := wrap(authWrapper, AuthenticateAPIKey(handler.repo, handler.encKey, handler.logger, hmacOpts...)(http.HandlerFunc(handler.revokeAPIKey)))
 
 	mux.Handle("GET /auth/derive-api-key", derive)
 	mux.Handle("GET /auth/api-keys", list)
 	mux.Handle("DELETE /auth/api-key", revoke)
 }
 
-// wrap applies mw to h if mw is non-nil, otherwise returns h unchanged.
-func wrap(mw func(http.Handler) http.Handler, h http.Handler) http.Handler {
+// wrap applies mw to inner if mw is non-nil, otherwise returns inner unchanged.
+func wrap(mw func(http.Handler) http.Handler, inner http.Handler) http.Handler {
 	if mw == nil {
-		return h
+		return inner
 	}
-	return mw(h)
+	return mw(inner)
 }
 
-func (h *Handler) recordAuthFailure(r *http.Request) {
-	if h.onAuthFailure != nil {
-		h.onAuthFailure(r)
+func (handler *Handler) recordAuthFailure(r *http.Request) {
+	if handler.onAuthFailure != nil {
+		handler.onAuthFailure(r)
 	}
 }
 
@@ -108,7 +108,7 @@ type deriveAPIKeyResponse struct {
 // The signature itself proves wallet control, so this endpoint is NOT wrapped
 // in any middleware — anyone able to produce a valid EIP-712 sig for address X
 // is, by definition, the owner of X.
-func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 	address := r.Header.Get(HeaderAddress)
 	signature := r.Header.Get(HeaderSignature)
 	timestamp := r.Header.Get(HeaderTimestamp)
@@ -122,31 +122,31 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 		nonce = "0" // SDK default: createL1Headers sends "0" when nonce is unset.
 	}
 
-	sigBytes, err := VerifyEIP712Signature(address, timestamp, nonce, ClobAuthMessage, signature, h.apiKeyCfg.ChainID)
+	sigBytes, err := VerifyEIP712Signature(address, timestamp, nonce, ClobAuthMessage, signature, handler.apiKeyCfg.ChainID)
 	if err != nil {
-		h.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
-		h.recordAuthFailure(r)
+		handler.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
 
-	apiKey, hmacSecret, passphrase := DeriveAPIKey(h.apiKeyCfg.DerivationSecret, sigBytes)
+	apiKey, hmacSecret, passphrase := DeriveAPIKey(handler.apiKeyCfg.DerivationSecret, sigBytes)
 	keyHash := HashAPIKey(apiKey)
 
-	encryptedSecret, err := EncryptSecret(h.apiKeyCfg.EncryptionKey, hmacSecret)
+	encryptedSecret, err := EncryptSecret(handler.apiKeyCfg.EncryptionKey, hmacSecret)
 	if err != nil {
-		h.internalError(w, "encrypting HMAC secret", err)
+		handler.internalError(w, "encrypting HMAC secret", err)
 		return
 	}
 
-	if err := h.repo.UpsertAPIKey(r.Context(), &APIKey{
+	if err := handler.repo.UpsertAPIKey(r.Context(), &APIKey{
 		KeyHash:             keyHash,
 		UserAddress:         address,
 		HMACSecretEncrypted: encryptedSecret,
 		PassphraseHash:      HashAPIKey(passphrase),
 		ExpiresAt:           time.Now().Add(apiKeyTTL),
 	}); err != nil {
-		h.internalError(w, "upserting api key", err)
+		handler.internalError(w, "upserting api key", err)
 		return
 	}
 
@@ -160,7 +160,7 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 // revokeAPIKey implements DELETE /auth/api-key. Auth is L2 HMAC; user address
 // is extracted from context (set by AuthenticateAPIKey middleware). The
 // request body carries the api_key whose hash we should mark revoked.
-func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		APIKey string `json:"api_key"`
 	}
@@ -176,12 +176,12 @@ func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	address := UserAddressFrom(r.Context())
 	keyHash := HashAPIKey(req.APIKey)
 
-	if err := h.repo.RevokeAPIKey(r.Context(), keyHash, address); err != nil {
+	if err := handler.repo.RevokeAPIKey(r.Context(), keyHash, address); err != nil {
 		if errors.Is(err, data.ErrNotFound) {
 			httputil.ErrorResponse(w, http.StatusNotFound, "api key not found")
 			return
 		}
-		h.internalError(w, "revoking api key", err)
+		handler.internalError(w, "revoking api key", err)
 		return
 	}
 
@@ -199,29 +199,29 @@ type apiKeyListItem struct {
 
 // listAPIKeys implements GET /auth/api-keys. Auth is L2 HMAC; user address is
 // extracted from context.
-func (h *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) listAPIKeys(w http.ResponseWriter, r *http.Request) {
 	address := UserAddressFrom(r.Context())
 
-	keys, err := h.repo.GetAPIKeysByUser(r.Context(), address)
+	keys, err := handler.repo.GetAPIKeysByUser(r.Context(), address)
 	if err != nil {
-		h.internalError(w, "listing api keys", err)
+		handler.internalError(w, "listing api keys", err)
 		return
 	}
 
 	items := make([]apiKeyListItem, len(keys))
-	for i, k := range keys {
-		items[i] = apiKeyListItem{
-			KeyHash:   k.KeyHash,
-			Label:     k.Label,
-			ExpiresAt: k.ExpiresAt,
-			CreatedAt: k.CreatedAt,
+	for idx, key := range keys {
+		items[idx] = apiKeyListItem{
+			KeyHash:   key.KeyHash,
+			Label:     key.Label,
+			ExpiresAt: key.ExpiresAt,
+			CreatedAt: key.CreatedAt,
 		}
 	}
 
 	_ = httputil.EncodeJSON(w, http.StatusOK, items)
 }
 
-func (h *Handler) internalError(w http.ResponseWriter, msg string, err error) {
-	h.logger.Error(msg, zap.Error(err))
+func (handler *Handler) internalError(w http.ResponseWriter, msg string, err error) {
+	handler.logger.Error(msg, zap.Error(err))
 	httputil.ErrorResponse(w, http.StatusInternalServerError, "internal server error")
 }

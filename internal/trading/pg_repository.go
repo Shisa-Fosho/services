@@ -23,8 +23,8 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 
 // SaveOrder persists a new order. Returns ErrDuplicateOrder if the signature
 // hash already exists.
-func (r *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("saving order: beginning transaction: %w", err)
 	}
@@ -65,8 +65,8 @@ func (r *PGRepository) SaveOrder(ctx context.Context, order *Order) error {
 }
 
 // GetOrder retrieves an order by ID. Returns ErrNotFound if not found.
-func (r *PGRepository) GetOrder(ctx context.Context, id string) (*Order, error) {
-	rows, err := r.pool.Query(ctx, `SELECT * FROM orders WHERE id = $1`, id)
+func (repo *PGRepository) GetOrder(ctx context.Context, id string) (*Order, error) {
+	rows, err := repo.pool.Query(ctx, `SELECT * FROM orders WHERE id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("getting order %s: %w", id, err)
 	}
@@ -81,17 +81,17 @@ func (r *PGRepository) GetOrder(ctx context.Context, id string) (*Order, error) 
 }
 
 // ListOrdersByUser returns orders for a user, optionally filtered by statuses.
-func (r *PGRepository) ListOrdersByUser(ctx context.Context, userAddress string, statuses []OrderStatus) ([]*Order, error) {
+func (repo *PGRepository) ListOrdersByUser(ctx context.Context, userAddress string, statuses []OrderStatus) ([]*Order, error) {
 	var rows pgx.Rows
 	var err error
 
 	if len(statuses) == 0 {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM orders WHERE maker = $1 ORDER BY created_at DESC`,
 			userAddress,
 		)
 	} else {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM orders WHERE maker = $1 AND status = ANY($2) ORDER BY created_at DESC`,
 			userAddress, statusSlice(statuses),
 		)
@@ -107,17 +107,17 @@ func (r *PGRepository) ListOrdersByUser(ctx context.Context, userAddress string,
 }
 
 // ListOrdersByMarket returns orders for a market, optionally filtered by statuses.
-func (r *PGRepository) ListOrdersByMarket(ctx context.Context, marketID string, statuses []OrderStatus) ([]*Order, error) {
+func (repo *PGRepository) ListOrdersByMarket(ctx context.Context, marketID string, statuses []OrderStatus) ([]*Order, error) {
 	var rows pgx.Rows
 	var err error
 
 	if len(statuses) == 0 {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM orders WHERE market_id = $1 ORDER BY created_at DESC`,
 			marketID,
 		)
 	} else {
-		rows, err = r.pool.Query(ctx,
+		rows, err = repo.pool.Query(ctx,
 			`SELECT * FROM orders WHERE market_id = $1 AND status = ANY($2) ORDER BY created_at DESC`,
 			marketID, statusSlice(statuses),
 		)
@@ -134,8 +134,8 @@ func (r *PGRepository) ListOrdersByMarket(ctx context.Context, marketID string, 
 
 // UpdateOrderStatus changes the status of an order. Returns ErrNotFound if the
 // order does not exist.
-func (r *PGRepository) UpdateOrderStatus(ctx context.Context, id string, status OrderStatus) error {
-	tag, err := r.pool.Exec(ctx,
+func (repo *PGRepository) UpdateOrderStatus(ctx context.Context, id string, status OrderStatus) error {
+	tag, err := repo.pool.Exec(ctx,
 		`UPDATE orders SET status = $1, updated_at = now() WHERE id = $2`,
 		status, id,
 	)
@@ -150,8 +150,8 @@ func (r *PGRepository) UpdateOrderStatus(ctx context.Context, id string, status 
 
 // SaveTrade persists a new trade. Returns ErrDuplicateTrade if the match ID
 // already exists.
-func (r *PGRepository) SaveTrade(ctx context.Context, trade *Trade) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) SaveTrade(ctx context.Context, trade *Trade) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("saving trade: beginning transaction: %w", err)
 	}
@@ -190,24 +190,24 @@ func (r *PGRepository) SaveTrade(ctx context.Context, trade *Trade) error {
 
 // GetBalance retrieves the balance for a user. Returns a zero-value Balance
 // if the user has no row.
-func (r *PGRepository) GetBalance(ctx context.Context, userAddress string) (*Balance, error) {
-	b := &Balance{UserAddress: userAddress}
-	err := r.pool.QueryRow(ctx,
+func (repo *PGRepository) GetBalance(ctx context.Context, userAddress string) (*Balance, error) {
+	balance := &Balance{UserAddress: userAddress}
+	err := repo.pool.QueryRow(ctx,
 		`SELECT available, reserved, updated_at
 		FROM balances WHERE user_address = $1`, userAddress,
-	).Scan(&b.Available, &b.Reserved, &b.UpdatedAt)
+	).Scan(&balance.Available, &balance.Reserved, &balance.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &Balance{UserAddress: userAddress}, nil
 		}
 		return nil, fmt.Errorf("getting balance for %s: %w", userAddress, err)
 	}
-	return b, nil
+	return balance, nil
 }
 
 // ReserveBalance atomically moves funds from available to reserved.
-func (r *PGRepository) ReserveBalance(ctx context.Context, userAddress string, amount int64) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) ReserveBalance(ctx context.Context, userAddress string, amount int64) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("reserving balance: beginning transaction: %w", err)
 	}
@@ -246,8 +246,8 @@ func (r *PGRepository) ReserveBalance(ctx context.Context, userAddress string, a
 }
 
 // ReleaseBalance atomically moves funds from reserved back to available.
-func (r *PGRepository) ReleaseBalance(ctx context.Context, userAddress string, amount int64) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) ReleaseBalance(ctx context.Context, userAddress string, amount int64) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("releasing balance: beginning transaction: %w", err)
 	}
@@ -272,8 +272,8 @@ func (r *PGRepository) ReleaseBalance(ctx context.Context, userAddress string, a
 }
 
 // DeductReserved atomically removes funds from reserved after a trade fills.
-func (r *PGRepository) DeductReserved(ctx context.Context, userAddress string, amount int64) error {
-	tx, err := r.pool.Begin(ctx)
+func (repo *PGRepository) DeductReserved(ctx context.Context, userAddress string, amount int64) error {
+	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("deducting reserved: beginning transaction: %w", err)
 	}
@@ -299,8 +299,8 @@ func (r *PGRepository) DeductReserved(ctx context.Context, userAddress string, a
 
 // CreditAvailable adds funds to a user's available balance.
 // Creates the balance row if it does not exist (UPSERT).
-func (r *PGRepository) CreditAvailable(ctx context.Context, userAddress string, amount int64) error {
-	_, err := r.pool.Exec(ctx,
+func (repo *PGRepository) CreditAvailable(ctx context.Context, userAddress string, amount int64) error {
+	_, err := repo.pool.Exec(ctx,
 		`INSERT INTO balances (user_address, available, reserved, updated_at)
 		 VALUES ($1, $2, 0, now())
 		 ON CONFLICT (user_address)
@@ -316,8 +316,8 @@ func (r *PGRepository) CreditAvailable(ctx context.Context, userAddress string, 
 // statusSlice converts OrderStatus values to int16 for pgx ANY() binding.
 func statusSlice(statuses []OrderStatus) []int16 {
 	out := make([]int16, len(statuses))
-	for i, s := range statuses {
-		out[i] = int16(s)
+	for idx, status := range statuses {
+		out[idx] = int16(status)
 	}
 	return out
 }

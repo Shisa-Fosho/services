@@ -160,8 +160,8 @@ func TestBalance_Total(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b := Balance{Available: tt.available, Reserved: tt.reserved}
-			if got := b.Total(); got != tt.want {
+			balance := Balance{Available: tt.available, Reserved: tt.reserved}
+			if got := balance.Total(); got != tt.want {
 				t.Errorf("Balance{Available: %d, Reserved: %d}.Total() = %d, want %d",
 					tt.available, tt.reserved, got, tt.want)
 			}
@@ -189,8 +189,8 @@ func TestOrderPrice(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			o := &Order{MakerAmount: tt.makerAmount, TakerAmount: tt.takerAmount}
-			if got := OrderPrice(o); got != tt.want {
+			order := &Order{MakerAmount: tt.makerAmount, TakerAmount: tt.takerAmount}
+			if got := OrderPrice(order); got != tt.want {
 				t.Errorf("OrderPrice(maker=%d, taker=%d) = %d, want %d",
 					tt.makerAmount, tt.takerAmount, got, tt.want)
 			}

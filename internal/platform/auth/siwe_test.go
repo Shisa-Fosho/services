@@ -38,19 +38,19 @@ func signSIWEMessage(t *testing.T, key *ecdsa.PrivateKey, message string) string
 // buildSIWEMessage constructs a valid EIP-4361 message string.
 func buildSIWEMessage(domain, address, nonce string, expiration *time.Time) string {
 	now := time.Now().UTC().Truncate(time.Second)
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s wants you to sign in with your Ethereum account:\n", domain)
-	fmt.Fprintf(&b, "%s\n", address)
-	fmt.Fprintf(&b, "\nSign in to Shisa\n\n")
-	fmt.Fprintf(&b, "URI: https://%s\n", domain)
-	fmt.Fprintf(&b, "Version: 1\n")
-	fmt.Fprintf(&b, "Chain ID: 137\n")
-	fmt.Fprintf(&b, "Nonce: %s\n", nonce)
-	fmt.Fprintf(&b, "Issued At: %s", now.Format(time.RFC3339))
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "%s wants you to sign in with your Ethereum account:\n", domain)
+	fmt.Fprintf(&builder, "%s\n", address)
+	fmt.Fprintf(&builder, "\nSign in to Shisa\n\n")
+	fmt.Fprintf(&builder, "URI: https://%s\n", domain)
+	fmt.Fprintf(&builder, "Version: 1\n")
+	fmt.Fprintf(&builder, "Chain ID: 137\n")
+	fmt.Fprintf(&builder, "Nonce: %s\n", nonce)
+	fmt.Fprintf(&builder, "Issued At: %s", now.Format(time.RFC3339))
 	if expiration != nil {
-		fmt.Fprintf(&b, "\nExpiration Time: %s", expiration.Format(time.RFC3339))
+		fmt.Fprintf(&builder, "\nExpiration Time: %s", expiration.Format(time.RFC3339))
 	}
-	return b.String()
+	return builder.String()
 }
 
 func TestSIWEVerify_ValidMessage(t *testing.T) {
@@ -172,20 +172,20 @@ func TestGenerateNonce_Uniqueness(t *testing.T) {
 	t.Parallel()
 
 	seen := make(map[string]bool)
-	for i := 0; i < 100; i++ {
-		n := GenerateNonce()
-		if seen[n] {
-			t.Fatalf("duplicate nonce at iteration %d: %s", i, n)
+	for iter := 0; iter < 100; iter++ {
+		nonce := GenerateNonce()
+		if seen[nonce] {
+			t.Fatalf("duplicate nonce at iteration %d: %s", iter, nonce)
 		}
-		seen[n] = true
+		seen[nonce] = true
 	}
 }
 
 func TestGenerateNonce_Length(t *testing.T) {
 	t.Parallel()
 
-	n := GenerateNonce()
-	if len(n) != 32 { // 16 bytes = 32 hex chars
-		t.Errorf("nonce length = %d, want 32", len(n))
+	nonce := GenerateNonce()
+	if len(nonce) != 32 { // 16 bytes = 32 hex chars
+		t.Errorf("nonce length = %d, want 32", len(nonce))
 	}
 }

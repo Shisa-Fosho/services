@@ -49,8 +49,8 @@ type middlewareOptions struct {
 // signature mismatch, secret decrypt/decode failures. Does NOT fire on shape
 // errors (missing POLY_API_KEY, missing signature headers, invalid-timestamp
 // parse, body read error) — those are probes, not brute-force attempts.
-func WithAuthFailureHook(fn func(*http.Request)) MiddlewareOption {
-	return func(o *middlewareOptions) { o.onAuthFailure = fn }
+func WithAuthFailureHook(hook func(*http.Request)) MiddlewareOption {
+	return func(opts *middlewareOptions) { opts.onAuthFailure = hook }
 }
 
 // AuthenticateAPIKey returns HTTP middleware that validates an L2 HMAC-signed
@@ -63,9 +63,9 @@ func WithAuthFailureHook(fn func(*http.Request)) MiddlewareOption {
 // token on a CLOB-protected route is rejected with 401 — enforcement of the
 // architectural rule that CLOB endpoints speak HMAC exclusively.
 func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.Logger, opts ...MiddlewareOption) func(http.Handler) http.Handler {
-	o := &middlewareOptions{}
-	for _, fn := range opts {
-		fn(o)
+	options := &middlewareOptions{}
+	for _, option := range opts {
+		option(options)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +74,7 @@ func AuthenticateAPIKey(reader APIKeyReader, encryptionKey []byte, logger *zap.L
 				httputil.ErrorResponse(w, http.StatusUnauthorized, "missing POLY_API_KEY header (this endpoint requires L2 HMAC auth)")
 				return
 			}
-			address, ok := authenticateAPIKey(w, r, apiKey, reader, encryptionKey, logger, o.onAuthFailure)
+			address, ok := authenticateAPIKey(w, r, apiKey, reader, encryptionKey, logger, options.onAuthFailure)
 			if !ok {
 				return
 			}

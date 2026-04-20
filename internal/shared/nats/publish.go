@@ -11,7 +11,7 @@ import (
 
 // Publish sends a message on Core NATS with OpenTelemetry trace context
 // injected into the message headers.
-func (c *Client) Publish(ctx context.Context, subject string, data []byte) error {
+func (client *Client) Publish(ctx context.Context, subject string, data []byte) error {
 	msg := &nats.Msg{
 		Subject: subject,
 		Data:    data,
@@ -20,7 +20,7 @@ func (c *Client) Publish(ctx context.Context, subject string, data []byte) error
 
 	injectTraceContext(ctx, msg)
 
-	if err := c.conn.PublishMsg(msg); err != nil {
+	if err := client.conn.PublishMsg(msg); err != nil {
 		return fmt.Errorf("publishing to %s: %w", subject, err)
 	}
 	return nil
@@ -28,7 +28,7 @@ func (c *Client) Publish(ctx context.Context, subject string, data []byte) error
 
 // JetStreamPublish sends a message via JetStream with OpenTelemetry trace
 // context injected into the message headers.
-func (c *Client) JetStreamPublish(ctx context.Context, subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
+func (client *Client) JetStreamPublish(ctx context.Context, subject string, data []byte, opts ...nats.PubOpt) (*nats.PubAck, error) {
 	msg := &nats.Msg{
 		Subject: subject,
 		Data:    data,
@@ -37,7 +37,7 @@ func (c *Client) JetStreamPublish(ctx context.Context, subject string, data []by
 
 	injectTraceContext(ctx, msg)
 
-	ack, err := c.js.PublishMsg(msg, opts...)
+	ack, err := client.jetStream.PublishMsg(msg, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("JetStream publishing to %s: %w", subject, err)
 	}

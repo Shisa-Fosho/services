@@ -17,15 +17,15 @@ import (
 type userCtxKey struct{}
 
 func userExtractor(ctx context.Context) string {
-	v, _ := ctx.Value(userCtxKey{}).(string)
-	return v
+	val, _ := ctx.Value(userCtxKey{}).(string)
+	return val
 }
 
-func newMwLimiter(t *testing.T, p Profile, extractor func(context.Context) string, trustProxy bool) (*Limiter, *fakeClock) {
+func newMwLimiter(t *testing.T, profile Profile, extractor func(context.Context) string, trustProxy bool) (*Limiter, *fakeClock) {
 	t.Helper()
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	clk := &fakeClock{now: time.Unix(1_700_000_000, 0)}
 	lim, err := NewLimiter(Config{
-		Profiles:          []Profile{p},
+		Profiles:          []Profile{profile},
 		Clock:             clk.Now,
 		UserExtractor:     extractor,
 		TrustProxyHeaders: trustProxy,
@@ -45,37 +45,37 @@ func okHandler() http.Handler {
 func TestMiddleware_HappyPath(t *testing.T) {
 	t.Parallel()
 	lim, _ := newMwLimiter(t, Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 3}, nil, false)
-	h := lim.Middleware("default", KeyByIP)(okHandler())
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.RemoteAddr = "1.2.3.4:5555"
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
+	handler := lim.Middleware("default", KeyByIP)(okHandler())
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "1.2.3.4:5555"
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 }
 
 func TestMiddleware_Returns429WithRetryAfter(t *testing.T) {
 	t.Parallel()
 	lim, _ := newMwLimiter(t, Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}, nil, false)
-	h := lim.Middleware("default", KeyByIP)(okHandler())
+	handler := lim.Middleware("default", KeyByIP)(okHandler())
 
 	// First request consumes the burst.
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.RemoteAddr = "1.2.3.4:5555"
-	h.ServeHTTP(httptest.NewRecorder(), r)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "1.2.3.4:5555"
+	handler.ServeHTTP(httptest.NewRecorder(), request)
 
 	// Second request should be rejected.
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429", w.Code)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", recorder.Code)
 	}
-	if ra := w.Header().Get("Retry-After"); ra == "" {
+	if retryAfter := recorder.Header().Get("Retry-After"); retryAfter == "" {
 		t.Fatal("expected Retry-After header")
 	}
 	var body map[string]string
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decoding body: %v", err)
 	}
 	if body["error"] == "" {
@@ -85,29 +85,29 @@ func TestMiddleware_Returns429WithRetryAfter(t *testing.T) {
 
 func TestMiddleware_LockoutShortCircuits(t *testing.T) {
 	t.Parallel()
-	p := Profile{
+	profile := Profile{
 		Name:            "auth",
 		Rate:            rate.Every(time.Second),
 		Burst:           100, // generous so rate limit doesn't fire
 		MaxFailures:     2,
 		LockoutDuration: time.Hour,
 	}
-	lim, _ := newMwLimiter(t, p, nil, false)
+	lim, _ := newMwLimiter(t, profile, nil, false)
 	prof, _ := lim.Profile("auth")
 	lim.RecordAuthFailure("1.2.3.4", prof)
 	lim.RecordAuthFailure("1.2.3.4", prof)
 
 	called := false
-	h := lim.Middleware("auth", KeyByIP)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := lim.Middleware("auth", KeyByIP)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusOK)
 	}))
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
-	r.RemoteAddr = "1.2.3.4:5555"
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429", w.Code)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/auth/login", nil)
+	request.RemoteAddr = "1.2.3.4:5555"
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", recorder.Code)
 	}
 	if called {
 		t.Fatal("handler should not be invoked when locked out")
@@ -116,30 +116,30 @@ func TestMiddleware_LockoutShortCircuits(t *testing.T) {
 
 func TestMiddleware_KeyByUserFallsBackToIP(t *testing.T) {
 	t.Parallel()
-	p := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
-	lim, _ := newMwLimiter(t, p, userExtractor, false)
-	h := lim.Middleware("default", KeyByUser)(okHandler())
+	profile := Profile{Name: "default", Rate: rate.Every(time.Second), Burst: 1}
+	lim, _ := newMwLimiter(t, profile, userExtractor, false)
+	handler := lim.Middleware("default", KeyByUser)(okHandler())
 
 	// No user in context — should key on IP.
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.RemoteAddr = "1.2.3.4:5555"
-	h.ServeHTTP(httptest.NewRecorder(), r)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.RemoteAddr = "1.2.3.4:5555"
+	handler.ServeHTTP(httptest.NewRecorder(), request)
 
 	// Second request from same IP, still no user — should 429.
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("status = %d, want 429 (IP-keyed)", w.Code)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 (IP-keyed)", recorder.Code)
 	}
 
 	// Different user on same IP — different bucket, should pass.
-	r2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	r2.RemoteAddr = "1.2.3.4:5555"
-	r2 = r2.WithContext(context.WithValue(context.Background(), userCtxKey{}, "alice"))
-	w2 := httptest.NewRecorder()
-	h.ServeHTTP(w2, r2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("user-keyed status = %d, want 200", w2.Code)
+	userRequest := httptest.NewRequest(http.MethodGet, "/", nil)
+	userRequest.RemoteAddr = "1.2.3.4:5555"
+	userRequest = userRequest.WithContext(context.WithValue(context.Background(), userCtxKey{}, "alice"))
+	userRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(userRecorder, userRequest)
+	if userRecorder.Code != http.StatusOK {
+		t.Fatalf("user-keyed status = %d, want 200", userRecorder.Code)
 	}
 }
 
@@ -168,18 +168,18 @@ func TestClientIPExported_ProxyHeaderRespectsTrust(t *testing.T) {
 		{"remoteaddr fallback when XFF empty", true, "", "192.0.2.1:1234", "192.0.2.1"},
 		{"bare remoteaddr without port", false, "", "192.0.2.1", "192.0.2.1"},
 	}
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			r.RemoteAddr = tc.remote
-			if tc.xff != "" {
-				r.Header.Set("X-Forwarded-For", tc.xff)
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.RemoteAddr = testCase.remote
+			if testCase.xff != "" {
+				request.Header.Set("X-Forwarded-For", testCase.xff)
 			}
-			got := ClientIP(r, tc.trust)
-			if got != tc.want {
-				t.Errorf("clientIP = %q, want %q", got, tc.want)
+			got := ClientIP(request, testCase.trust)
+			if got != testCase.want {
+				t.Errorf("clientIP = %q, want %q", got, testCase.want)
 			}
 		})
 	}

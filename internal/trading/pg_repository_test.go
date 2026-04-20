@@ -125,21 +125,21 @@ func TestPGRepository_ListOrdersByUser_StatusFilter(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	for i, status := range []OrderStatus{OrderStatusOpen, OrderStatusFilled, OrderStatusOpen} {
-		o := &Order{
+	for idx, status := range []OrderStatus{OrderStatusOpen, OrderStatusFilled, OrderStatusOpen} {
+		order := &Order{
 			Maker:         "0xfilteruser",
 			TokenID:       "token-1",
 			MakerAmount:   40,
 			TakerAmount:   60,
-			Salt:          fmt.Sprintf("salt-filter-%d", i),
-			Signature:     fmt.Sprintf("sig-filter-%d", i),
+			Salt:          fmt.Sprintf("salt-filter-%d", idx),
+			Signature:     fmt.Sprintf("sig-filter-%d", idx),
 			Status:        status,
 			OrderType:     OrderTypeGTC,
 			MarketID:      "a0000000-0000-0000-0000-000000000001",
-			SignatureHash: fmt.Sprintf("hash-filter-%d", i),
+			SignatureHash: fmt.Sprintf("hash-filter-%d", idx),
 		}
-		if err := repo.SaveOrder(ctx, o); err != nil {
-			t.Fatalf("SaveOrder %d: %v", i, err)
+		if err := repo.SaveOrder(ctx, order); err != nil {
+			t.Fatalf("SaveOrder %d: %v", idx, err)
 		}
 	}
 
@@ -169,21 +169,21 @@ func TestPGRepository_ListOrdersByMarket(t *testing.T) {
 	marketA := "a0000000-0000-0000-0000-000000000001"
 	marketB := "b0000000-0000-0000-0000-000000000002"
 
-	for i, mkt := range []string{marketA, marketA, marketB} {
-		o := &Order{
+	for idx, market := range []string{marketA, marketA, marketB} {
+		order := &Order{
 			Maker:         "0xmaker",
 			TokenID:       "token-1",
 			MakerAmount:   50,
 			TakerAmount:   50,
-			Salt:          fmt.Sprintf("salt-mkt-%d", i),
-			Signature:     fmt.Sprintf("sig-mkt-%d", i),
+			Salt:          fmt.Sprintf("salt-mkt-%d", idx),
+			Signature:     fmt.Sprintf("sig-mkt-%d", idx),
 			Status:        OrderStatusOpen,
 			OrderType:     OrderTypeGTC,
-			MarketID:      mkt,
-			SignatureHash: fmt.Sprintf("hash-mkt-%d", i),
+			MarketID:      market,
+			SignatureHash: fmt.Sprintf("hash-mkt-%d", idx),
 		}
-		if err := repo.SaveOrder(ctx, o); err != nil {
-			t.Fatalf("SaveOrder %d: %v", i, err)
+		if err := repo.SaveOrder(ctx, order); err != nil {
+			t.Fatalf("SaveOrder %d: %v", idx, err)
 		}
 	}
 
@@ -202,7 +202,7 @@ func TestPGRepository_UpdateOrderStatus(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	o := &Order{
+	order := &Order{
 		Maker:         "0xstatus",
 		TokenID:       "token-1",
 		MakerAmount:   40,
@@ -214,7 +214,7 @@ func TestPGRepository_UpdateOrderStatus(t *testing.T) {
 		MarketID:      "a0000000-0000-0000-0000-000000000001",
 		SignatureHash: "hash-status",
 	}
-	if err := repo.SaveOrder(ctx, o); err != nil {
+	if err := repo.SaveOrder(ctx, order); err != nil {
 		t.Fatalf("SaveOrder: %v", err)
 	}
 
@@ -251,21 +251,21 @@ func TestPGRepository_SaveTrade(t *testing.T) {
 
 	// Create two orders first (FK constraint).
 	marketID := "a0000000-0000-0000-0000-000000000001"
-	for i, sig := range []string{"sig-trade-maker", "sig-trade-taker"} {
-		o := &Order{
-			Maker:         fmt.Sprintf("0xtrader%d", i),
+	for idx, sig := range []string{"sig-trade-maker", "sig-trade-taker"} {
+		order := &Order{
+			Maker:         fmt.Sprintf("0xtrader%d", idx),
 			TokenID:       "token-1",
 			MakerAmount:   50,
 			TakerAmount:   50,
-			Salt:          fmt.Sprintf("salt-trade-%d", i),
+			Salt:          fmt.Sprintf("salt-trade-%d", idx),
 			Signature:     sig,
 			Status:        OrderStatusOpen,
 			OrderType:     OrderTypeGTC,
 			MarketID:      marketID,
-			SignatureHash: fmt.Sprintf("hash-trade-%d", i),
+			SignatureHash: fmt.Sprintf("hash-trade-%d", idx),
 		}
-		if err := repo.SaveOrder(ctx, o); err != nil {
-			t.Fatalf("SaveOrder %d: %v", i, err)
+		if err := repo.SaveOrder(ctx, order); err != nil {
+			t.Fatalf("SaveOrder %d: %v", idx, err)
 		}
 	}
 
@@ -306,12 +306,12 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 	addr := "0xbalance1"
 
 	// GetBalance for non-existent user returns zero.
-	b, err := repo.GetBalance(ctx, addr)
+	balance, err := repo.GetBalance(ctx, addr)
 	if err != nil {
 		t.Fatalf("GetBalance: %v", err)
 	}
-	if b.Available != 0 || b.Reserved != 0 {
-		t.Errorf("expected zero balance, got available=%d reserved=%d", b.Available, b.Reserved)
+	if balance.Available != 0 || balance.Reserved != 0 {
+		t.Errorf("expected zero balance, got available=%d reserved=%d", balance.Available, balance.Reserved)
 	}
 
 	// Credit creates the row.
@@ -319,9 +319,9 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 		t.Fatalf("CreditAvailable: %v", err)
 	}
 
-	b, _ = repo.GetBalance(ctx, addr)
-	if b.Available != 1000 {
-		t.Errorf("available = %d, want 1000", b.Available)
+	balance, _ = repo.GetBalance(ctx, addr)
+	if balance.Available != 1000 {
+		t.Errorf("available = %d, want 1000", balance.Available)
 	}
 
 	// Credit again adds to existing.
@@ -329,9 +329,9 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 		t.Fatalf("CreditAvailable (2nd): %v", err)
 	}
 
-	b, _ = repo.GetBalance(ctx, addr)
-	if b.Available != 1500 {
-		t.Errorf("available = %d, want 1500", b.Available)
+	balance, _ = repo.GetBalance(ctx, addr)
+	if balance.Available != 1500 {
+		t.Errorf("available = %d, want 1500", balance.Available)
 	}
 
 	// Reserve moves from available to reserved.
@@ -339,9 +339,9 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 		t.Fatalf("ReserveBalance: %v", err)
 	}
 
-	b, _ = repo.GetBalance(ctx, addr)
-	if b.Available != 1100 || b.Reserved != 400 {
-		t.Errorf("after reserve: available=%d reserved=%d, want 1100/400", b.Available, b.Reserved)
+	balance, _ = repo.GetBalance(ctx, addr)
+	if balance.Available != 1100 || balance.Reserved != 400 {
+		t.Errorf("after reserve: available=%d reserved=%d, want 1100/400", balance.Available, balance.Reserved)
 	}
 
 	// Release moves from reserved back to available.
@@ -349,9 +349,9 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 		t.Fatalf("ReleaseBalance: %v", err)
 	}
 
-	b, _ = repo.GetBalance(ctx, addr)
-	if b.Available != 1200 || b.Reserved != 300 {
-		t.Errorf("after release: available=%d reserved=%d, want 1200/300", b.Available, b.Reserved)
+	balance, _ = repo.GetBalance(ctx, addr)
+	if balance.Available != 1200 || balance.Reserved != 300 {
+		t.Errorf("after release: available=%d reserved=%d, want 1200/300", balance.Available, balance.Reserved)
 	}
 
 	// DeductReserved removes from reserved (trade settled).
@@ -359,12 +359,12 @@ func TestPGRepository_Balance_CreditAndReserve(t *testing.T) {
 		t.Fatalf("DeductReserved: %v", err)
 	}
 
-	b, _ = repo.GetBalance(ctx, addr)
-	if b.Available != 1200 || b.Reserved != 100 {
-		t.Errorf("after deduct: available=%d reserved=%d, want 1200/100", b.Available, b.Reserved)
+	balance, _ = repo.GetBalance(ctx, addr)
+	if balance.Available != 1200 || balance.Reserved != 100 {
+		t.Errorf("after deduct: available=%d reserved=%d, want 1200/100", balance.Available, balance.Reserved)
 	}
-	if b.Total() != 1300 {
-		t.Errorf("total = %d, want 1300", b.Total())
+	if balance.Total() != 1300 {
+		t.Errorf("total = %d, want 1300", balance.Total())
 	}
 }
 

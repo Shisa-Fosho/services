@@ -19,33 +19,33 @@ type mockChecker struct {
 	err error
 }
 
-func (m *mockChecker) Check(_ context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.err
+func (checker *mockChecker) Check(_ context.Context) error {
+	checker.mu.Lock()
+	defer checker.mu.Unlock()
+	return checker.err
 }
 
-func (m *mockChecker) setErr(err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.err = err
+func (checker *mockChecker) setErr(err error) {
+	checker.mu.Lock()
+	defer checker.mu.Unlock()
+	checker.err = err
 }
 
 func TestWatchHealth_SetsServing(t *testing.T) {
 	t.Parallel()
 
-	hs := health.NewServer()
+	healthServer := health.NewServer()
 	checker := &mockChecker{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, healthServer, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Wait for at least one tick.
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := hs.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
+	resp, err := healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -57,13 +57,13 @@ func TestWatchHealth_SetsServing(t *testing.T) {
 func TestWatchHealth_TransitionsToNotServing(t *testing.T) {
 	t.Parallel()
 
-	hs := health.NewServer()
+	healthServer := health.NewServer()
 	checker := &mockChecker{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, healthServer, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Let it become healthy first.
 	time.Sleep(50 * time.Millisecond)
@@ -72,7 +72,7 @@ func TestWatchHealth_TransitionsToNotServing(t *testing.T) {
 	checker.setErr(errors.New("db gone"))
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := hs.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
+	resp, err := healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -84,18 +84,18 @@ func TestWatchHealth_TransitionsToNotServing(t *testing.T) {
 func TestWatchHealth_RecoversAfterFailure(t *testing.T) {
 	t.Parallel()
 
-	hs := health.NewServer()
+	healthServer := health.NewServer()
 	checker := &mockChecker{err: errors.New("initial failure")}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go sharedgrpc.WatchHealth(ctx, hs, "test", checker, 10*time.Millisecond, zap.NewNop())
+	go sharedgrpc.WatchHealth(ctx, healthServer, "test", checker, 10*time.Millisecond, zap.NewNop())
 
 	// Wait for NOT_SERVING.
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err := hs.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
+	resp, err := healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestWatchHealth_RecoversAfterFailure(t *testing.T) {
 	checker.setErr(nil)
 	time.Sleep(50 * time.Millisecond)
 
-	resp, err = hs.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
+	resp, err = healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{Service: "test"})
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}

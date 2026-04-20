@@ -16,8 +16,8 @@ func TestDeriveAPIKey_Deterministic(t *testing.T) {
 	t.Parallel()
 
 	sig := make([]byte, 65)
-	for i := range sig {
-		sig[i] = byte(i)
+	for idx := range sig {
+		sig[idx] = byte(idx)
 	}
 
 	key1, secret1, pass1 := DeriveAPIKey(testDerivationSecret, sig)
@@ -113,15 +113,15 @@ func TestDeriveAPIKey_KeyAndSecretDiffer(t *testing.T) {
 func TestHashAPIKey_Consistency(t *testing.T) {
 	t.Parallel()
 
-	h1 := HashAPIKey("test-key-123")
-	h2 := HashAPIKey("test-key-123")
+	hash1 := HashAPIKey("test-key-123")
+	hash2 := HashAPIKey("test-key-123")
 
-	if h1 != h2 {
-		t.Errorf("hashes differ: %q vs %q", h1, h2)
+	if hash1 != hash2 {
+		t.Errorf("hashes differ: %q vs %q", hash1, hash2)
 	}
 
-	if len(h1) != 64 {
-		t.Errorf("hash length = %d, want 64", len(h1))
+	if len(hash1) != 64 {
+		t.Errorf("hash length = %d, want 64", len(hash1))
 	}
 }
 
@@ -159,12 +159,12 @@ func TestEncryptSecret_DifferentNonces(t *testing.T) {
 // eip712Hash builds the EIP-712 hash for a ClobAuth message (test helper).
 func eip712Hash(t *testing.T, address string) []byte {
 	t.Helper()
-	td := clobAuthTypedData(address, "1700000000", "0", ClobAuthMessage, 137)
-	domainHash, err := td.HashStruct("EIP712Domain", td.Domain.Map())
+	typedData := clobAuthTypedData(address, "1700000000", "0", ClobAuthMessage, 137)
+	domainHash, err := typedData.HashStruct("EIP712Domain", typedData.Domain.Map())
 	if err != nil {
 		t.Fatalf("hashing domain: %v", err)
 	}
-	messageHash, err := td.HashStruct(td.PrimaryType, td.Message)
+	messageHash, err := typedData.HashStruct(typedData.PrimaryType, typedData.Message)
 	if err != nil {
 		t.Fatalf("hashing message: %v", err)
 	}

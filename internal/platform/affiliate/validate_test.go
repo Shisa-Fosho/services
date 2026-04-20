@@ -10,49 +10,49 @@ func TestValidateReferral(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		modify  func(r *Referral)
+		modify  func(ref *Referral)
 		wantErr bool
 		errType error
 	}{
 		{
 			name:    "valid referral",
-			modify:  func(r *Referral) {},
+			modify:  func(ref *Referral) {},
 			wantErr: false,
 		},
 		{
 			name:    "empty referrer address",
-			modify:  func(r *Referral) { r.ReferrerAddress = "" },
+			modify:  func(ref *Referral) { ref.ReferrerAddress = "" },
 			wantErr: true,
 			errType: ErrInvalidReferral,
 		},
 		{
 			name:    "invalid referrer address format",
-			modify:  func(r *Referral) { r.ReferrerAddress = "not-an-address" },
+			modify:  func(ref *Referral) { ref.ReferrerAddress = "not-an-address" },
 			wantErr: true,
 			errType: ErrInvalidReferral,
 		},
 		{
 			name:    "referrer address too short",
-			modify:  func(r *Referral) { r.ReferrerAddress = "0x1234" },
+			modify:  func(ref *Referral) { ref.ReferrerAddress = "0x1234" },
 			wantErr: true,
 			errType: ErrInvalidReferral,
 		},
 		{
 			name:    "empty referred address",
-			modify:  func(r *Referral) { r.ReferredAddress = "" },
+			modify:  func(ref *Referral) { ref.ReferredAddress = "" },
 			wantErr: true,
 			errType: ErrInvalidReferral,
 		},
 		{
 			name:    "invalid referred address format",
-			modify:  func(r *Referral) { r.ReferredAddress = "0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ" },
+			modify:  func(ref *Referral) { ref.ReferredAddress = "0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ" },
 			wantErr: true,
 			errType: ErrInvalidReferral,
 		},
 		{
 			name: "self referral",
-			modify: func(r *Referral) {
-				r.ReferredAddress = r.ReferrerAddress
+			modify: func(ref *Referral) {
+				ref.ReferredAddress = ref.ReferrerAddress
 			},
 			wantErr: true,
 			errType: ErrSelfReferral,
@@ -95,47 +95,47 @@ func TestValidateEarning(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		modify  func(e *Earning)
+		modify  func(earning *Earning)
 		wantErr bool
 	}{
 		{
 			name:    "valid earning passes",
-			modify:  func(e *Earning) {},
+			modify:  func(earning *Earning) {},
 			wantErr: false,
 		},
 		{
 			name:    "empty referrer address",
-			modify:  func(e *Earning) { e.ReferrerAddress = "" },
+			modify:  func(earning *Earning) { earning.ReferrerAddress = "" },
 			wantErr: true,
 		},
 		{
 			name:    "malformed referrer address",
-			modify:  func(e *Earning) { e.ReferrerAddress = "not-an-address" },
+			modify:  func(earning *Earning) { earning.ReferrerAddress = "not-an-address" },
 			wantErr: true,
 		},
 		{
 			name:    "empty trade id",
-			modify:  func(e *Earning) { e.TradeID = "" },
+			modify:  func(earning *Earning) { earning.TradeID = "" },
 			wantErr: true,
 		},
 		{
 			name:    "zero fee amount",
-			modify:  func(e *Earning) { e.FeeAmount = 0 },
+			modify:  func(earning *Earning) { earning.FeeAmount = 0 },
 			wantErr: true,
 		},
 		{
 			name:    "negative fee amount",
-			modify:  func(e *Earning) { e.FeeAmount = -1 },
+			modify:  func(earning *Earning) { earning.FeeAmount = -1 },
 			wantErr: true,
 		},
 		{
 			name:    "zero referrer cut",
-			modify:  func(e *Earning) { e.ReferrerCut = 0 },
+			modify:  func(earning *Earning) { earning.ReferrerCut = 0 },
 			wantErr: true,
 		},
 		{
 			name:    "negative referrer cut",
-			modify:  func(e *Earning) { e.ReferrerCut = -1 },
+			modify:  func(earning *Earning) { earning.ReferrerCut = -1 },
 			wantErr: true,
 		},
 	}
@@ -143,9 +143,9 @@ func TestValidateEarning(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			e := validEarning()
-			tt.modify(e)
-			err := ValidateEarning(e)
+			earning := validEarning()
+			tt.modify(earning)
+			err := ValidateEarning(earning)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}

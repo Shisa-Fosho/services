@@ -41,13 +41,13 @@ type HandlerOption func(*Handler)
 // failures inside session endpoints (SIWE sig mismatch, invalid refresh
 // token). Used to drive rate-limiter lockout counters. Not invoked on shape
 // errors (missing body, malformed JSON, empty required fields).
-func WithHandlerAuthFailureHook(fn func(*http.Request)) HandlerOption {
-	return func(h *Handler) { h.onAuthFailure = fn }
+func WithHandlerAuthFailureHook(hook func(*http.Request)) HandlerOption {
+	return func(handler *Handler) { handler.onAuthFailure = hook }
 }
 
 // NewHandler creates a new session handler.
 func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool, opts ...HandlerOption) *Handler {
-	h := &Handler{
+	handler := &Handler{
 		logger:  logger,
 		repo:    repo,
 		jwt:     jwt,
@@ -55,35 +55,35 @@ func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager
 		safeCfg: safeCfg,
 		secure:  secure,
 	}
-	for _, fn := range opts {
-		fn(h)
+	for _, option := range opts {
+		option(handler)
 	}
-	return h
+	return handler
 }
 
 // RegisterRoutes registers session-auth routes on the mux. If authWrapper is
 // non-nil, it is applied to the credential-verify routes (signup, login,
 // refresh) — use it to inject a strict rate-limit profile. nil disables wrapping.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
-	mux.HandleFunc("GET /auth/nonce", h.nonce)
-	mux.Handle("POST /auth/signup/wallet", wrap(authWrapper, http.HandlerFunc(h.signupWallet)))
-	mux.Handle("POST /auth/login/wallet", wrap(authWrapper, http.HandlerFunc(h.loginWallet)))
-	mux.Handle("POST /auth/refresh", wrap(authWrapper, http.HandlerFunc(h.refresh)))
-	mux.HandleFunc("POST /auth/logout", h.logout)
-	mux.Handle("GET /auth/session", Authenticate(h.jwt)(http.HandlerFunc(h.session)))
+func (handler *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
+	mux.HandleFunc("GET /auth/nonce", handler.nonce)
+	mux.Handle("POST /auth/signup/wallet", wrap(authWrapper, http.HandlerFunc(handler.signupWallet)))
+	mux.Handle("POST /auth/login/wallet", wrap(authWrapper, http.HandlerFunc(handler.loginWallet)))
+	mux.Handle("POST /auth/refresh", wrap(authWrapper, http.HandlerFunc(handler.refresh)))
+	mux.HandleFunc("POST /auth/logout", handler.logout)
+	mux.Handle("GET /auth/session", Authenticate(handler.jwt)(http.HandlerFunc(handler.session)))
 }
 
-// wrap applies mw to h if mw is non-nil, otherwise returns h unchanged.
-func wrap(mw func(http.Handler) http.Handler, h http.Handler) http.Handler {
+// wrap applies mw to next if mw is non-nil, otherwise returns next unchanged.
+func wrap(mw func(http.Handler) http.Handler, next http.Handler) http.Handler {
 	if mw == nil {
-		return h
+		return next
 	}
-	return mw(h)
+	return mw(next)
 }
 
-func (h *Handler) recordAuthFailure(r *http.Request) {
-	if h.onAuthFailure != nil {
-		h.onAuthFailure(r)
+func (handler *Handler) recordAuthFailure(r *http.Request) {
+	if handler.onAuthFailure != nil {
+		handler.onAuthFailure(r)
 	}
 }
 
@@ -91,7 +91,7 @@ type nonceResponse struct {
 	Nonce string `json:"nonce"`
 }
 
-func (h *Handler) nonce(w http.ResponseWriter, _ *http.Request) {
+func (handler *Handler) nonce(w http.ResponseWriter, _ *http.Request) {
 	_ = httputil.EncodeJSON(w, http.StatusOK, nonceResponse{Nonce: GenerateNonce()})
 }
 
@@ -107,7 +107,7 @@ type authResponse struct {
 	SafeAddress string `json:"safe_address"`
 }
 
-func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 	var req walletSignupRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
@@ -118,15 +118,15 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	address, err := h.siwe.Verify(req.Message, req.Signature)
+	address, err := handler.siwe.Verify(req.Message, req.Signature)
 	if err != nil {
-		h.logger.Info("SIWE verification failed", zap.Error(err))
-		h.recordAuthFailure(r)
+		handler.logger.Info("SIWE verification failed", zap.Error(err))
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
 
-	safeAddr := eth.DeriveSafeAddress(h.safeCfg, common.HexToAddress(address))
+	safeAddr := eth.DeriveSafeAddress(handler.safeCfg, common.HexToAddress(address))
 
 	user := &data.User{
 		Address:      address,
@@ -134,7 +134,7 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 		SignupMethod: data.SignupMethodWallet,
 		SafeAddress:  safeAddr.Hex(),
 	}
-	if err := h.repo.CreateUser(r.Context(), user); err != nil {
+	if err := handler.repo.CreateUser(r.Context(), user); err != nil {
 		if errors.Is(err, data.ErrDuplicateUser) {
 			httputil.ErrorResponse(w, http.StatusConflict, "user already exists")
 			return
@@ -143,11 +143,11 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 			httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		h.internalError(w, "creating user", err)
+		handler.internalError(w, "creating user", err)
 		return
 	}
 
-	h.issueSession(w, r, address, safeAddr.Hex())
+	handler.issueSession(w, r, address, safeAddr.Hex())
 }
 
 type walletLoginRequest struct {
@@ -155,7 +155,7 @@ type walletLoginRequest struct {
 	Signature string `json:"signature"`
 }
 
-func (h *Handler) loginWallet(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) loginWallet(w http.ResponseWriter, r *http.Request) {
 	var req walletLoginRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
@@ -166,92 +166,92 @@ func (h *Handler) loginWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	address, err := h.siwe.Verify(req.Message, req.Signature)
+	address, err := handler.siwe.Verify(req.Message, req.Signature)
 	if err != nil {
-		h.logger.Info("SIWE verification failed", zap.Error(err))
-		h.recordAuthFailure(r)
+		handler.logger.Info("SIWE verification failed", zap.Error(err))
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
 
-	user, err := h.repo.GetUserByAddress(r.Context(), address)
+	user, err := handler.repo.GetUserByAddress(r.Context(), address)
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) {
-			h.recordAuthFailure(r)
+			handler.recordAuthFailure(r)
 			httputil.ErrorResponse(w, http.StatusUnauthorized, "user not found")
 			return
 		}
-		h.internalError(w, "getting user", err)
+		handler.internalError(w, "getting user", err)
 		return
 	}
 
-	h.issueSession(w, r, user.Address, user.SafeAddress)
+	handler.issueSession(w, r, user.Address, user.SafeAddress)
 }
 
-func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(refreshCookieName)
 	if err != nil {
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "missing refresh token")
 		return
 	}
 
-	claims, err := h.jwt.ValidateRefreshToken(cookie.Value)
+	claims, err := handler.jwt.ValidateRefreshToken(cookie.Value)
 	if err != nil {
-		h.recordAuthFailure(r)
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
-	stored, err := h.repo.GetRefreshToken(r.Context(), claims.ID)
+	stored, err := handler.repo.GetRefreshToken(r.Context(), claims.ID)
 	if err != nil {
-		h.recordAuthFailure(r)
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 	if stored.Revoked {
-		h.recordAuthFailure(r)
+		handler.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "token revoked")
 		return
 	}
 
-	if err := h.repo.RevokeRefreshToken(r.Context(), claims.ID); err != nil {
-		h.internalError(w, "revoking old refresh token", err)
+	if err := handler.repo.RevokeRefreshToken(r.Context(), claims.ID); err != nil {
+		handler.internalError(w, "revoking old refresh token", err)
 		return
 	}
 
-	accessToken, err := h.jwt.IssueAccessToken(claims.Subject)
+	accessToken, err := handler.jwt.IssueAccessToken(claims.Subject)
 	if err != nil {
-		h.internalError(w, "issuing access token", err)
+		handler.internalError(w, "issuing access token", err)
 		return
 	}
 
-	refreshToken, jti, expiresAt, err := h.jwt.IssueRefreshToken(claims.Subject)
+	refreshToken, jti, expiresAt, err := handler.jwt.IssueRefreshToken(claims.Subject)
 	if err != nil {
-		h.internalError(w, "issuing refresh token", err)
+		handler.internalError(w, "issuing refresh token", err)
 		return
 	}
 
-	if err := h.repo.StoreRefreshToken(r.Context(), &data.RefreshToken{
+	if err := handler.repo.StoreRefreshToken(r.Context(), &data.RefreshToken{
 		ID:          jti,
 		UserAddress: claims.Subject,
 		ExpiresAt:   expiresAt,
 	}); err != nil {
-		h.internalError(w, "storing refresh token", err)
+		handler.internalError(w, "storing refresh token", err)
 		return
 	}
 
-	h.setRefreshCookie(w, refreshToken, expiresAt)
+	handler.setRefreshCookie(w, refreshToken, expiresAt)
 	_ = httputil.EncodeJSON(w, http.StatusOK, map[string]string{
 		"access_token": accessToken,
 	})
 }
 
-func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) logout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(refreshCookieName)
 	if err == nil && cookie.Value != "" {
-		claims, err := h.jwt.ValidateRefreshToken(cookie.Value)
+		claims, err := handler.jwt.ValidateRefreshToken(cookie.Value)
 		if err == nil {
-			_ = h.repo.RevokeRefreshToken(r.Context(), claims.ID)
+			_ = handler.repo.RevokeRefreshToken(r.Context(), claims.ID)
 		}
 	}
 
@@ -262,7 +262,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   h.secure,
+		Secure:   handler.secure,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -273,15 +273,15 @@ type sessionResponse struct {
 	SafeAddress string `json:"safe_address"`
 }
 
-func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) session(w http.ResponseWriter, r *http.Request) {
 	address := UserAddressFrom(r.Context())
-	user, err := h.repo.GetUserByAddress(r.Context(), address)
+	user, err := handler.repo.GetUserByAddress(r.Context(), address)
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) {
 			httputil.ErrorResponse(w, http.StatusUnauthorized, "user not found")
 			return
 		}
-		h.internalError(w, "getting user for session", err)
+		handler.internalError(w, "getting user for session", err)
 		return
 	}
 
@@ -294,29 +294,29 @@ func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 
 // issueSession creates access + refresh tokens, stores the refresh token,
 // sets the cookie, and writes the JSON response.
-func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, address, safeAddress string) {
-	accessToken, err := h.jwt.IssueAccessToken(address)
+func (handler *Handler) issueSession(w http.ResponseWriter, r *http.Request, address, safeAddress string) {
+	accessToken, err := handler.jwt.IssueAccessToken(address)
 	if err != nil {
-		h.internalError(w, "issuing access token", err)
+		handler.internalError(w, "issuing access token", err)
 		return
 	}
 
-	refreshToken, jti, expiresAt, err := h.jwt.IssueRefreshToken(address)
+	refreshToken, jti, expiresAt, err := handler.jwt.IssueRefreshToken(address)
 	if err != nil {
-		h.internalError(w, "issuing refresh token", err)
+		handler.internalError(w, "issuing refresh token", err)
 		return
 	}
 
-	if err := h.repo.StoreRefreshToken(r.Context(), &data.RefreshToken{
+	if err := handler.repo.StoreRefreshToken(r.Context(), &data.RefreshToken{
 		ID:          jti,
 		UserAddress: address,
 		ExpiresAt:   expiresAt,
 	}); err != nil {
-		h.internalError(w, "storing refresh token", err)
+		handler.internalError(w, "storing refresh token", err)
 		return
 	}
 
-	h.setRefreshCookie(w, refreshToken, expiresAt)
+	handler.setRefreshCookie(w, refreshToken, expiresAt)
 	_ = httputil.EncodeJSON(w, http.StatusOK, authResponse{
 		AccessToken: accessToken,
 		Address:     address,
@@ -324,12 +324,12 @@ func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, address, 
 	})
 }
 
-func (h *Handler) internalError(w http.ResponseWriter, msg string, err error) {
-	h.logger.Error(msg, zap.Error(err))
+func (handler *Handler) internalError(w http.ResponseWriter, msg string, err error) {
+	handler.logger.Error(msg, zap.Error(err))
 	httputil.ErrorResponse(w, http.StatusInternalServerError, "internal server error")
 }
 
-func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
+func (handler *Handler) setRefreshCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     refreshCookieName,
 		Value:    token,
@@ -337,6 +337,6 @@ func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, expiresA
 		Expires:  expiresAt,
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   h.secure,
+		Secure:   handler.secure,
 	})
 }

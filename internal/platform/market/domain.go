@@ -26,8 +26,8 @@ const (
 	EventTypeMultiOutcome EventType = 1
 )
 
-func (t EventType) String() string {
-	switch t {
+func (eventType EventType) String() string {
+	switch eventType {
 	case EventTypeBinary:
 		return "BINARY"
 	case EventTypeMultiOutcome:
@@ -38,8 +38,8 @@ func (t EventType) String() string {
 }
 
 // IsValid returns true if the event type is a known value.
-func (t EventType) IsValid() bool {
-	return t == EventTypeBinary || t == EventTypeMultiOutcome
+func (eventType EventType) IsValid() bool {
+	return eventType == EventTypeBinary || eventType == EventTypeMultiOutcome
 }
 
 // Status represents the lifecycle state of an event or market.
@@ -53,8 +53,8 @@ const (
 	StatusVoided   Status = 3
 )
 
-func (s Status) String() string {
-	switch s {
+func (status Status) String() string {
+	switch status {
 	case StatusActive:
 		return "ACTIVE"
 	case StatusPaused:
@@ -69,8 +69,8 @@ func (s Status) String() string {
 }
 
 // IsValid returns true if the status is a known value.
-func (s Status) IsValid() bool {
-	return s >= StatusActive && s <= StatusVoided
+func (status Status) IsValid() bool {
+	return status >= StatusActive && status <= StatusVoided
 }
 
 // Outcome represents the resolved outcome of a market.
@@ -82,8 +82,8 @@ const (
 	OutcomeNo  Outcome = 1
 )
 
-func (o Outcome) String() string {
-	switch o {
+func (outcome Outcome) String() string {
+	switch outcome {
 	case OutcomeYes:
 		return "YES"
 	case OutcomeNo:
@@ -94,8 +94,8 @@ func (o Outcome) String() string {
 }
 
 // IsValid returns true if the outcome is a known value.
-func (o Outcome) IsValid() bool {
-	return o == OutcomeYes || o == OutcomeNo
+func (outcome Outcome) IsValid() bool {
+	return outcome == OutcomeYes || outcome == OutcomeNo
 }
 
 // ValidTransition returns true if moving from one Status to another
