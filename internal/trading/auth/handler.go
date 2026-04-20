@@ -20,35 +20,72 @@ const apiKeyTTL = 30 * 24 * time.Hour
 // Handler implements the trading service's Polymarket-compatible API-key
 // lifecycle endpoints.
 type Handler struct {
-	logger    *zap.Logger
-	repo      APIKeyRepository
-	encKey    []byte
-	apiKeyCfg APIKeyConfig
+	logger        *zap.Logger
+	repo          APIKeyRepository
+	encKey        []byte
+	apiKeyCfg     APIKeyConfig
+	onAuthFailure func(*http.Request)
+}
+
+// HandlerOption configures an API-key Handler.
+type HandlerOption func(*Handler)
+
+// WithHandlerAuthFailureHook sets a callback invoked on EIP-712 sig
+// verification failure inside /auth/derive-api-key. Used to drive rate-limiter
+// lockout. Not invoked on shape errors (missing required headers).
+func WithHandlerAuthFailureHook(fn func(*http.Request)) HandlerOption {
+	return func(h *Handler) { h.onAuthFailure = fn }
 }
 
 // NewHandler creates an API-key handler.
-func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg APIKeyConfig) *Handler {
-	return &Handler{
+func NewHandler(logger *zap.Logger, repo APIKeyRepository, apiKeyCfg APIKeyConfig, opts ...HandlerOption) *Handler {
+	h := &Handler{
 		logger:    logger,
 		repo:      repo,
 		encKey:    apiKeyCfg.EncryptionKey,
 		apiKeyCfg: apiKeyCfg,
 	}
+	for _, fn := range opts {
+		fn(h)
+	}
+	return h
 }
 
 // RegisterRoutes registers the three API-key lifecycle endpoints on the mux.
+// If authWrapper is non-nil, it is applied to all three routes — use it to
+// inject a strict rate-limit profile. derive is additionally self-authenticated
+// (EIP-712 signature); list/revoke are wrapped in AuthenticateAPIKey.
 //
 // Auth-wise:
-//   - derive is L1-authenticated (EIP-712 wallet sig in POLY_* headers) —
-//     no middleware wrapper; the handler verifies the signature itself.
-//   - list and revoke are L2-authenticated (HMAC over request with existing
-//     API-key creds) — wrapped in AuthenticateAPIKey middleware.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /auth/derive-api-key", h.deriveAPIKey)
-	mux.Handle("GET /auth/api-keys",
-		AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.listAPIKeys)))
-	mux.Handle("DELETE /auth/api-key",
-		AuthenticateAPIKey(h.repo, h.encKey, h.logger)(http.HandlerFunc(h.revokeAPIKey)))
+//   - derive is L1-authenticated (EIP-712 wallet sig) — the handler verifies.
+//   - list and revoke are L2-authenticated (HMAC) — wrapped in AuthenticateAPIKey.
+func (h *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
+	hmacOpts := []MiddlewareOption{}
+	if h.onAuthFailure != nil {
+		hmacOpts = append(hmacOpts, WithAuthFailureHook(h.onAuthFailure))
+	}
+
+	derive := wrap(authWrapper, http.HandlerFunc(h.deriveAPIKey))
+	list := wrap(authWrapper, AuthenticateAPIKey(h.repo, h.encKey, h.logger, hmacOpts...)(http.HandlerFunc(h.listAPIKeys)))
+	revoke := wrap(authWrapper, AuthenticateAPIKey(h.repo, h.encKey, h.logger, hmacOpts...)(http.HandlerFunc(h.revokeAPIKey)))
+
+	mux.Handle("GET /auth/derive-api-key", derive)
+	mux.Handle("GET /auth/api-keys", list)
+	mux.Handle("DELETE /auth/api-key", revoke)
+}
+
+// wrap applies mw to h if mw is non-nil, otherwise returns h unchanged.
+func wrap(mw func(http.Handler) http.Handler, h http.Handler) http.Handler {
+	if mw == nil {
+		return h
+	}
+	return mw(h)
+}
+
+func (h *Handler) recordAuthFailure(r *http.Request) {
+	if h.onAuthFailure != nil {
+		h.onAuthFailure(r)
+	}
 }
 
 // deriveAPIKeyResponse is the wire shape expected by clob-client v5.8.2's
@@ -88,6 +125,7 @@ func (h *Handler) deriveAPIKey(w http.ResponseWriter, r *http.Request) {
 	sigBytes, err := VerifyEIP712Signature(address, timestamp, nonce, ClobAuthMessage, signature, h.apiKeyCfg.ChainID)
 	if err != nil {
 		h.logger.Info("EIP-712 verification failed", zap.String("address", address), zap.Error(err))
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}

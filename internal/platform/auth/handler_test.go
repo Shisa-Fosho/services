@@ -387,7 +387,7 @@ func TestSession_InvalidToken(t *testing.T) {
 	h := testHandler(t, repo, verifier)
 
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/session", nil)
 	r.Header.Set("Authorization", "Bearer invalid-token")

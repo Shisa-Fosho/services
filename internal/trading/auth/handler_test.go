@@ -169,7 +169,7 @@ func TestDeriveAPIKey_SDKShapedRequest(t *testing.T) {
 	h := testHandler(t, repo)
 
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/derive-api-key", nil)
 	r.Header.Set("POLY_ADDRESS", address)
@@ -348,7 +348,7 @@ func TestRevokeAPIKey_Success(t *testing.T) {
 
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	body := `{"api_key":"` + rawKeyToRevoke + `"}`
 	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
@@ -374,7 +374,7 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	body := `{"api_key":"does-not-exist"}`
 	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(body))
@@ -397,7 +397,7 @@ func TestRevokeAPIKey_MissingField(t *testing.T) {
 
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader("{}"))
 	signL2Request(t, r, callerKey, callerSecret, callerPass, "{}")
@@ -416,7 +416,7 @@ func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
 	repo := newFakeRepo()
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodDelete, "/auth/api-key", strings.NewReader(`{"api_key":"x"}`))
 	r.Header.Set("Authorization", "Bearer some.jwt.token")
@@ -449,7 +449,7 @@ func TestListAPIKeys_WithKeys(t *testing.T) {
 
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
 	signL2Request(t, r, callerKey, callerSecret, callerPass, "")
@@ -484,7 +484,7 @@ func TestListAPIKeys_SecretsStripped(t *testing.T) {
 
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
 	signL2Request(t, r, callerKey, callerSecret, callerPass, "")
@@ -506,7 +506,7 @@ func TestListAPIKeys_RejectsJWT(t *testing.T) {
 	repo := newFakeRepo()
 	h := testHandler(t, repo)
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux)
+	h.RegisterRoutes(mux, nil)
 
 	r := httptest.NewRequest(http.MethodGet, "/auth/api-keys", nil)
 	r.Header.Set("Authorization", "Bearer some.jwt.token")

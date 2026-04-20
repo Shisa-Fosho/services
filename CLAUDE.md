@@ -149,7 +149,25 @@ docs/                       # Documentation
 **IMPORTANT: Always read `docs/conventions.md` before writing or reviewing code.** It is the authoritative style guide.
 
 ### No Speculative Code
-Only write code that is called within the current issue's scope. Do not ship unused functions, helpers, or "placeholder" code for future issues. If the next issue needs something, it will be built then — Go's compiler will catch missing functions immediately. Document any expected prerequisites in the issue description instead.
+
+Ship only code that is reached from real call sites within the current issue's
+scope. "Speculative" isn't limited to whole functions — the rule covers:
+
+- **Exported functions, methods, and option constructors** (`WithFoo`, `NewBar`).
+  Go's unused-code detection only fires on *internal* identifiers — exported
+  ones accumulate silently. You must check with grep, not trust the compiler.
+- **Parameters, struct fields, and interface methods** that no caller populates
+  or reads. An unused `MiddlewareOption`, config field, or context key counts.
+- **Parallel-API symmetry** across packages. If package A has a `WithAuthFailureHook`
+  and package B's version has no caller, don't mirror it into B "for consistency" —
+  that's dead code dressed up as tidiness. Different packages often *should* have
+  different surfaces because they protect different things.
+- **Placeholder hooks, feature flags, and config fields** wired up "in case"
+  a future issue needs them.
+
+If a future issue genuinely needs the missing piece, the build error (internal)
+or grep (exported) will surface it in seconds. Document expected prerequisites
+in the issue description — not in unreachable code.
 
 ### Idempotency
 All write operations MUST be idempotent. Key source depends on operation:

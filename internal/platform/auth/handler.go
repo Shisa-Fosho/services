@@ -25,17 +25,29 @@ const refreshCookieName = "refresh_token"
 
 // Handler implements the platform service's session-auth REST endpoints.
 type Handler struct {
-	logger  *zap.Logger
-	repo    data.SessionRepository
-	jwt     *JWTManager
-	siwe    MessageVerifier
-	safeCfg eth.SafeConfig
-	secure  bool // Set Secure flag on cookies (true for non-localhost).
+	logger        *zap.Logger
+	repo          data.SessionRepository
+	jwt           *JWTManager
+	siwe          MessageVerifier
+	safeCfg       eth.SafeConfig
+	secure        bool // Set Secure flag on cookies (true for non-localhost).
+	onAuthFailure func(*http.Request)
+}
+
+// HandlerOption configures a session Handler.
+type HandlerOption func(*Handler)
+
+// WithHandlerAuthFailureHook sets a callback invoked on credential-verify
+// failures inside session endpoints (SIWE sig mismatch, invalid refresh
+// token). Used to drive rate-limiter lockout counters. Not invoked on shape
+// errors (missing body, malformed JSON, empty required fields).
+func WithHandlerAuthFailureHook(fn func(*http.Request)) HandlerOption {
+	return func(h *Handler) { h.onAuthFailure = fn }
 }
 
 // NewHandler creates a new session handler.
-func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool) *Handler {
-	return &Handler{
+func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager, siwe MessageVerifier, safeCfg eth.SafeConfig, secure bool, opts ...HandlerOption) *Handler {
+	h := &Handler{
 		logger:  logger,
 		repo:    repo,
 		jwt:     jwt,
@@ -43,16 +55,36 @@ func NewHandler(logger *zap.Logger, repo data.SessionRepository, jwt *JWTManager
 		safeCfg: safeCfg,
 		secure:  secure,
 	}
+	for _, fn := range opts {
+		fn(h)
+	}
+	return h
 }
 
-// RegisterRoutes registers session-auth routes on the mux.
-func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes registers session-auth routes on the mux. If authWrapper is
+// non-nil, it is applied to the credential-verify routes (signup, login,
+// refresh) — use it to inject a strict rate-limit profile. nil disables wrapping.
+func (h *Handler) RegisterRoutes(mux *http.ServeMux, authWrapper func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /auth/nonce", h.nonce)
-	mux.HandleFunc("POST /auth/signup/wallet", h.signupWallet)
-	mux.HandleFunc("POST /auth/login/wallet", h.loginWallet)
-	mux.HandleFunc("POST /auth/refresh", h.refresh)
+	mux.Handle("POST /auth/signup/wallet", wrap(authWrapper, http.HandlerFunc(h.signupWallet)))
+	mux.Handle("POST /auth/login/wallet", wrap(authWrapper, http.HandlerFunc(h.loginWallet)))
+	mux.Handle("POST /auth/refresh", wrap(authWrapper, http.HandlerFunc(h.refresh)))
 	mux.HandleFunc("POST /auth/logout", h.logout)
 	mux.Handle("GET /auth/session", Authenticate(h.jwt)(http.HandlerFunc(h.session)))
+}
+
+// wrap applies mw to h if mw is non-nil, otherwise returns h unchanged.
+func wrap(mw func(http.Handler) http.Handler, h http.Handler) http.Handler {
+	if mw == nil {
+		return h
+	}
+	return mw(h)
+}
+
+func (h *Handler) recordAuthFailure(r *http.Request) {
+	if h.onAuthFailure != nil {
+		h.onAuthFailure(r)
+	}
 }
 
 type nonceResponse struct {
@@ -89,6 +121,7 @@ func (h *Handler) signupWallet(w http.ResponseWriter, r *http.Request) {
 	address, err := h.siwe.Verify(req.Message, req.Signature)
 	if err != nil {
 		h.logger.Info("SIWE verification failed", zap.Error(err))
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
@@ -136,6 +169,7 @@ func (h *Handler) loginWallet(w http.ResponseWriter, r *http.Request) {
 	address, err := h.siwe.Verify(req.Message, req.Signature)
 	if err != nil {
 		h.logger.Info("SIWE verification failed", zap.Error(err))
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "signature verification failed")
 		return
 	}
@@ -143,6 +177,7 @@ func (h *Handler) loginWallet(w http.ResponseWriter, r *http.Request) {
 	user, err := h.repo.GetUserByAddress(r.Context(), address)
 	if err != nil {
 		if errors.Is(err, data.ErrNotFound) {
+			h.recordAuthFailure(r)
 			httputil.ErrorResponse(w, http.StatusUnauthorized, "user not found")
 			return
 		}
@@ -162,16 +197,19 @@ func (h *Handler) refresh(w http.ResponseWriter, r *http.Request) {
 
 	claims, err := h.jwt.ValidateRefreshToken(cookie.Value)
 	if err != nil {
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
 	stored, err := h.repo.GetRefreshToken(r.Context(), claims.ID)
 	if err != nil {
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 	if stored.Revoked {
+		h.recordAuthFailure(r)
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "token revoked")
 		return
 	}
