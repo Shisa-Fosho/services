@@ -195,3 +195,17 @@ func (repo *PGRepository) RevokeAllRefreshTokens(ctx context.Context, userAddres
 	}
 	return nil
 }
+
+// IsAdminWallet reports whether the given address appears in admin_wallets.
+// The address is compared against the stored (lowercase) form exactly —
+// callers are expected to normalize with strings.ToLower beforehand.
+func (repo *PGRepository) IsAdminWallet(ctx context.Context, address string) (bool, error) {
+	var exists bool
+	err := repo.pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM admin_wallets WHERE address = $1)`, address,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("checking admin wallet %s: %w", address, err)
+	}
+	return exists, nil
+}

@@ -5,8 +5,8 @@ import "context"
 // Repository defines the persistence interface for the market domain.
 // Implementations must be safe for concurrent use.
 type Repository interface {
-	// CreateCategory persists a new category. Returns ErrDuplicateSlug if the
-	// slug already exists.
+	// CreateCategory persists a new category and populates cat.ID with the
+	// generated UUID. Returns ErrDuplicateSlug if the slug already exists.
 	CreateCategory(ctx context.Context, cat *Category) error
 
 	// GetCategory retrieves a category by ID. Returns ErrNotFound if not found.
@@ -14,6 +14,15 @@ type Repository interface {
 
 	// ListCategories returns all categories ordered by name.
 	ListCategories(ctx context.Context) ([]*Category, error)
+
+	// UpdateCategory changes the name and slug of an existing category.
+	// Returns ErrNotFound if no category has the given id, or ErrDuplicateSlug
+	// if the new slug collides with another existing category.
+	UpdateCategory(ctx context.Context, id, name, slug string) error
+
+	// DeleteCategory removes a category by id. Returns ErrNotFound if no
+	// category has the given id.
+	DeleteCategory(ctx context.Context, id string) error
 
 	// CreateEvent persists a new event. Validates input via ValidateEvent
 	// before persisting. Returns ErrInvalidEvent for shape violations,

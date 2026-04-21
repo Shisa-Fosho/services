@@ -53,7 +53,7 @@ func run() error {
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		tracerShutdown(shutdownCtx)
+		_ = tracerShutdown(shutdownCtx)
 	}()
 
 	// Metrics HTTP server.

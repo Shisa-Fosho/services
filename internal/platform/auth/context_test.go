@@ -26,3 +26,34 @@ func TestUserAddressFrom_EmptyContext(t *testing.T) {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
+
+func TestAdminAddressContext_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	addr := "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
+	ctx = WithAdminAddress(ctx, addr)
+	got := AdminAddressFrom(ctx)
+	if got != addr {
+		t.Errorf("AdminAddressFrom = %q, want %q", got, addr)
+	}
+}
+
+func TestAdminAddressFrom_EmptyContext(t *testing.T) {
+	t.Parallel()
+
+	got := AdminAddressFrom(context.Background())
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestAdminAddress_DoesNotLeakIntoUserKey(t *testing.T) {
+	t.Parallel()
+
+	ctx := WithAdminAddress(context.Background(), "0xabc")
+	if got := UserAddressFrom(ctx); got != "" {
+		t.Errorf("admin key should not populate user key, got %q", got)
+	}
+}
