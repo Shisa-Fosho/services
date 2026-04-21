@@ -22,13 +22,13 @@ func NewPGRepository(pool *pgxpool.Pool) *PGRepository {
 	return &PGRepository{pool: pool}
 }
 
-// CreateCategory persists a new category. Returns ErrDuplicateSlug if the slug
-// already exists.
+// CreateCategory persists a new category and populates cat.ID with the
+// generated UUID. Returns ErrDuplicateSlug if the slug already exists.
 func (repo *PGRepository) CreateCategory(ctx context.Context, cat *Category) error {
-	_, err := repo.pool.Exec(ctx,
-		`INSERT INTO categories (name, slug) VALUES ($1, $2)`,
+	err := repo.pool.QueryRow(ctx,
+		`INSERT INTO categories (name, slug) VALUES ($1, $2) RETURNING id`,
 		cat.Name, cat.Slug,
-	)
+	).Scan(&cat.ID)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			return fmt.Errorf("creating category %q: %w", cat.Slug, ErrDuplicateSlug)
@@ -65,6 +65,44 @@ func (repo *PGRepository) ListCategories(ctx context.Context) ([]*Category, erro
 		return nil, fmt.Errorf("scanning categories: %w", err)
 	}
 	return categories, nil
+}
+
+// UpdateCategory changes the name and slug of an existing category and
+// returns the updated row in a single roundtrip via RETURNING. Returns
+// ErrNotFound if the id doesn't match a row, or ErrDuplicateSlug if the new
+// slug is already taken by another category.
+func (repo *PGRepository) UpdateCategory(ctx context.Context, id, name, slug string) (*Category, error) {
+	cat := &Category{}
+	err := repo.pool.QueryRow(ctx,
+		`UPDATE categories SET name = $1, slug = $2 WHERE id = $3
+		 RETURNING id, name, slug`,
+		name, slug, id,
+	).Scan(&cat.ID, &cat.Name, &cat.Slug)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("updating category %s: %w", id, ErrNotFound)
+		}
+		if postgres.IsUniqueViolation(err) {
+			return nil, fmt.Errorf("updating category %s: %w", id, ErrDuplicateSlug)
+		}
+		return nil, fmt.Errorf("updating category %s: %w", id, err)
+	}
+	return cat, nil
+}
+
+// DeleteCategory removes a category by id. Returns ErrNotFound if the id
+// doesn't match a row.
+func (repo *PGRepository) DeleteCategory(ctx context.Context, id string) error {
+	tag, err := repo.pool.Exec(ctx,
+		`DELETE FROM categories WHERE id = $1`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("deleting category %s: %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("deleting category %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 // CreateEvent persists a new event. Validates input via ValidateEvent before

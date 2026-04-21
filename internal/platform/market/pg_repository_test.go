@@ -85,6 +85,106 @@ func TestPGRepository_GetCategory_NotFound(t *testing.T) {
 	}
 }
 
+func TestPGRepository_UpdateCategory(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	if err := repo.CreateCategory(ctx, &Category{Name: "Sports", Slug: "sports"}); err != nil {
+		t.Fatalf("creating category: %v", err)
+	}
+	cats, _ := repo.ListCategories(ctx)
+	id := cats[0].ID
+
+	got, err := repo.UpdateCategory(ctx, id, "Sports & Entertainment", "sports-ent")
+	if err != nil {
+		t.Fatalf("updating category: %v", err)
+	}
+	if got.ID != id {
+		t.Errorf("id = %q, want %q", got.ID, id)
+	}
+	if got.Name != "Sports & Entertainment" {
+		t.Errorf("name = %q, want %q", got.Name, "Sports & Entertainment")
+	}
+	if got.Slug != "sports-ent" {
+		t.Errorf("slug = %q, want %q", got.Slug, "sports-ent")
+	}
+}
+
+func TestPGRepository_UpdateCategory_NotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, err := repo.UpdateCategory(ctx,
+		"00000000-0000-0000-0000-000000000000", "Ghost", "ghost")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestPGRepository_UpdateCategory_DuplicateSlug(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	if err := repo.CreateCategory(ctx, &Category{Name: "Sports", Slug: "sports"}); err != nil {
+		t.Fatalf("creating first category: %v", err)
+	}
+	if err := repo.CreateCategory(ctx, &Category{Name: "Politics", Slug: "politics"}); err != nil {
+		t.Fatalf("creating second category: %v", err)
+	}
+	cats, _ := repo.ListCategories(ctx)
+	var politicsID string
+	for _, c := range cats {
+		if c.Slug == "politics" {
+			politicsID = c.ID
+		}
+	}
+
+	_, err := repo.UpdateCategory(ctx, politicsID, "Politics", "sports")
+	if !errors.Is(err, ErrDuplicateSlug) {
+		t.Errorf("expected ErrDuplicateSlug, got: %v", err)
+	}
+}
+
+func TestPGRepository_DeleteCategory(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	if err := repo.CreateCategory(ctx, &Category{Name: "Sports", Slug: "sports"}); err != nil {
+		t.Fatalf("creating category: %v", err)
+	}
+	cats, _ := repo.ListCategories(ctx)
+	id := cats[0].ID
+
+	if err := repo.DeleteCategory(ctx, id); err != nil {
+		t.Fatalf("deleting category: %v", err)
+	}
+
+	_, err := repo.GetCategory(ctx, id)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound after delete, got: %v", err)
+	}
+}
+
+func TestPGRepository_DeleteCategory_NotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	err := repo.DeleteCategory(ctx, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
 func TestPGRepository_CreateAndGetEvent(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)

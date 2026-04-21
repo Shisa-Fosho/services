@@ -17,6 +17,7 @@ import (
 
 	platformauth "github.com/Shisa-Fosho/services/internal/platform/auth"
 	"github.com/Shisa-Fosho/services/internal/platform/data"
+	"github.com/Shisa-Fosho/services/internal/platform/market"
 	"github.com/Shisa-Fosho/services/internal/shared/envutil"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
 	sharedgrpc "github.com/Shisa-Fosho/services/internal/shared/grpc"
@@ -57,7 +58,7 @@ func run() error {
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		tracerShutdown(shutdownCtx)
+		_ = tracerShutdown(shutdownCtx)
 	}()
 
 	// Metrics HTTP server.
@@ -159,6 +160,22 @@ func run() error {
 		w.Write([]byte("ok"))
 	})
 	sessionHandler.RegisterRoutes(mux, limiter.Middleware("auth", ratelimit.KeyByIP))
+
+	// Market admin handlers. Admin middleware stacks JWT authentication, the
+	// admin_wallets check, and the per-admin rate limiter. Order matters:
+	// the limiter sits inside RequireAdmin so only authenticated admin
+	// requests consume bucket tokens.
+	adminLimit := limiter.Middleware("admin", ratelimit.KeyByUser)
+	adminMiddleware := func(next http.Handler) http.Handler {
+		return platformauth.Authenticate(jwtMgr)(
+			platformauth.RequireAdmin(repo)(
+				adminLimit(next),
+			),
+		)
+	}
+	marketRepo := market.NewPGRepository(pool)
+	marketHandler := market.NewHandler(marketRepo, logger)
+	marketHandler.RegisterAdminRoutes(mux, adminMiddleware)
 
 	// Middleware stack (outermost first):
 	//   Recovery → RequestID → RateLimit(default,IP) → Logging → mux

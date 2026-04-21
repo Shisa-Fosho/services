@@ -21,6 +21,7 @@ var (
 // Values match Polymarket's CTFExchange contract (0 = BUY, 1 = SELL).
 type Side int8
 
+// Side values.
 const (
 	SideBuy  Side = 0
 	SideSell Side = 1
@@ -45,6 +46,7 @@ func (side Side) IsValid() bool {
 // OrderStatus represents the lifecycle state of an order.
 type OrderStatus int8
 
+// OrderStatus values.
 const (
 	OrderStatusOpen            OrderStatus = 0
 	OrderStatusFilled          OrderStatus = 1
@@ -75,6 +77,7 @@ func (status OrderStatus) IsValid() bool {
 // OrderType represents the execution strategy of an order.
 type OrderType int8
 
+// OrderType values.
 const (
 	OrderTypeGTC OrderType = 0 // Good-Til-Cancelled: stays on book until filled or cancelled.
 	OrderTypeFOK OrderType = 1 // Fill-Or-Kill: must fill entirely on arrival or be rejected.

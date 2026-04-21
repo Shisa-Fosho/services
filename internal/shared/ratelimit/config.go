@@ -31,6 +31,12 @@ type Config struct {
 // EIP-712 sig verify, HMAC sig verify). 20/min per IP, burst 5, 5 consecutive
 // failures triggers a 15-minute lockout.
 //
+// "admin" — tight cap for admin-only mutation endpoints, keyed by admin
+// address. 60/min per admin, burst 20. Admin traffic is naturally low; this
+// bounds blast radius if an admin JWT is leaked or a runaway script targets
+// admin endpoints. No lockout (lockouts are for credential-verify routes,
+// not post-auth rate shaping).
+//
 // "default" — loose IP-keyed backstop for the whole service. 300/min, burst 30.
 func DefaultProfiles() []Profile {
 	return []Profile{
@@ -41,6 +47,12 @@ func DefaultProfiles() []Profile {
 			MaxFailures:     5,
 			LockoutDuration: 15 * time.Minute,
 			MaxEntries:      10_000,
+		},
+		{
+			Name:       "admin",
+			Rate:       rate.Every(time.Second),
+			Burst:      20,
+			MaxEntries: 1_000,
 		},
 		{
 			Name:       "default",

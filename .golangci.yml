@@ -26,7 +26,19 @@ linters:
 linters-settings:
   errcheck:
     check-type-assertions: true
-    check-blank: true
+    # check-blank: false is deliberate. `_ = foo()` is the Go idiom for
+    # "I've considered this error and have nothing actionable to do with it"
+    # (e.g., writing a response after the client may have disconnected).
+    # Treating that idiom as unchecked produces noise at every handler terminus.
+    check-blank: false
+    # Fire-and-forget APIs where ignoring the error is correct on the intended
+    # path. Rollback after Commit, Sync/Shutdown during teardown, Write to
+    # ResponseWriter after headers are flushed — all safely ignorable.
+    exclude-functions:
+      - (github.com/jackc/pgx/v5.Tx).Rollback
+      - (*go.uber.org/zap.Logger).Sync
+      - (*net/http.Server).Shutdown
+      - (net/http.ResponseWriter).Write
 
   gofmt:
     simplify: true
@@ -69,3 +81,9 @@ issues:
         - govet
         - revive
         - gosec
+
+    # main packages legitimately don't need doc comments.
+    - path: cmd/.*/main\.go
+      text: "package-comments"
+      linters:
+        - revive

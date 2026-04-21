@@ -31,5 +31,5 @@ var testAddresses = []string{
 // addresses (e.g., referrer and referred), call this in a loop and retry on
 // collision, or add more entries to testAddresses.
 func TestAddress() string {
-	return testAddresses[rand.Intn(len(testAddresses))]
+	return testAddresses[rand.Intn(len(testAddresses))] //nolint:gosec // test fixture, non-cryptographic
 }

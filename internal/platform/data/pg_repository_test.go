@@ -240,3 +240,44 @@ func TestPGRepository_GetPosition_NotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
+
+func TestPGRepository_IsAdminWallet(t *testing.T) {
+	pool := postgres.TestPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `TRUNCATE admin_wallets`); err != nil {
+		t.Fatalf("cleaning admin_wallets: %v", err)
+	}
+
+	repo := NewPGRepository(pool)
+
+	adminAddr := "0xabcdef0123456789abcdef0123456789abcdef01"
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO admin_wallets (address, label) VALUES ($1, $2)`,
+		adminAddr, "ops-team",
+	); err != nil {
+		t.Fatalf("seeding admin_wallets: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{"admin address matches", adminAddr, true},
+		{"non-admin address", "0x1111111111111111111111111111111111111111", false},
+		{"empty address", "", false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := repo.IsAdminWallet(ctx, tc.addr)
+			if err != nil {
+				t.Fatalf("IsAdminWallet: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("IsAdminWallet(%q) = %v, want %v", tc.addr, got, tc.want)
+			}
+		})
+	}
+}

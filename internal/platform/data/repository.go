@@ -52,3 +52,17 @@ type SessionRepository interface {
 	// RevokeAllRefreshTokens revokes all active refresh tokens for a user.
 	RevokeAllRefreshTokens(ctx context.Context, userAddress string) error
 }
+
+// AdminRepository is the narrow read interface consumed by the platform
+// service's admin authorization middleware. It is deliberately separate from
+// SessionRepository so that the middleware's injection surface stays minimal
+// and unit tests can supply a tiny fake.
+//
+// Implementations must be safe for concurrent use.
+type AdminRepository interface {
+	// IsAdminWallet reports whether the given Ethereum address is present in
+	// the admin_wallets table. The caller is expected to normalize the address
+	// (e.g., strings.ToLower) before calling — the underlying column stores
+	// lowercase form.
+	IsAdminWallet(ctx context.Context, address string) (bool, error)
+}
