@@ -67,24 +67,27 @@ func (repo *PGRepository) ListCategories(ctx context.Context) ([]*Category, erro
 	return categories, nil
 }
 
-// UpdateCategory changes the name and slug of an existing category.
-// Returns ErrNotFound if the id doesn't match a row, or ErrDuplicateSlug if
-// the new slug is already taken by another category.
-func (repo *PGRepository) UpdateCategory(ctx context.Context, id, name, slug string) error {
-	tag, err := repo.pool.Exec(ctx,
-		`UPDATE categories SET name = $1, slug = $2 WHERE id = $3`,
+// UpdateCategory changes the name and slug of an existing category and
+// returns the updated row in a single roundtrip via RETURNING. Returns
+// ErrNotFound if the id doesn't match a row, or ErrDuplicateSlug if the new
+// slug is already taken by another category.
+func (repo *PGRepository) UpdateCategory(ctx context.Context, id, name, slug string) (*Category, error) {
+	cat := &Category{}
+	err := repo.pool.QueryRow(ctx,
+		`UPDATE categories SET name = $1, slug = $2 WHERE id = $3
+		 RETURNING id, name, slug`,
 		name, slug, id,
-	)
+	).Scan(&cat.ID, &cat.Name, &cat.Slug)
 	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			return fmt.Errorf("updating category %s: %w", id, ErrDuplicateSlug)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("updating category %s: %w", id, ErrNotFound)
 		}
-		return fmt.Errorf("updating category %s: %w", id, err)
+		if postgres.IsUniqueViolation(err) {
+			return nil, fmt.Errorf("updating category %s: %w", id, ErrDuplicateSlug)
+		}
+		return nil, fmt.Errorf("updating category %s: %w", id, err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("updating category %s: %w", id, ErrNotFound)
-	}
-	return nil
+	return cat, nil
 }
 
 // DeleteCategory removes a category by id. Returns ErrNotFound if the id

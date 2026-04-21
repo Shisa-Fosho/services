@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"go.uber.org/zap"
@@ -24,7 +25,6 @@ type fakeRepo struct {
 	createErr error
 	updateErr error
 	deleteErr error
-	getErr    error
 }
 
 func newFakeRepo() *fakeRepo {
@@ -42,40 +42,29 @@ func (f *fakeRepo) CreateCategory(_ context.Context, cat *Category) error {
 		return ErrDuplicateSlug
 	}
 	f.nextID++
-	cat.ID = "cat-" + itoa(f.nextID)
+	cat.ID = "cat-" + strconv.Itoa(f.nextID)
 	stored := &Category{ID: cat.ID, Name: cat.Name, Slug: cat.Slug}
 	f.byID[cat.ID] = stored
 	f.bySlug[cat.Slug] = stored
 	return nil
 }
 
-func (f *fakeRepo) GetCategory(_ context.Context, id string) (*Category, error) {
-	if f.getErr != nil {
-		return nil, f.getErr
+func (f *fakeRepo) UpdateCategory(_ context.Context, id, name, slug string) (*Category, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
 	}
 	cat, ok := f.byID[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return cat, nil
-}
-
-func (f *fakeRepo) UpdateCategory(_ context.Context, id, name, slug string) error {
-	if f.updateErr != nil {
-		return f.updateErr
-	}
-	cat, ok := f.byID[id]
-	if !ok {
-		return ErrNotFound
-	}
 	if other, exists := f.bySlug[slug]; exists && other.ID != id {
-		return ErrDuplicateSlug
+		return nil, ErrDuplicateSlug
 	}
 	delete(f.bySlug, cat.Slug)
 	cat.Name = name
 	cat.Slug = slug
 	f.bySlug[slug] = cat
-	return nil
+	return cat, nil
 }
 
 func (f *fakeRepo) DeleteCategory(_ context.Context, id string) error {
@@ -89,19 +78,6 @@ func (f *fakeRepo) DeleteCategory(_ context.Context, id string) error {
 	delete(f.byID, id)
 	delete(f.bySlug, cat.Slug)
 	return nil
-}
-
-// itoa is a tiny int→string helper to avoid pulling in strconv in test setup.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 4)
-	for n > 0 {
-		buf = append([]byte{byte('0' + n%10)}, buf...)
-		n /= 10
-	}
-	return string(buf)
 }
 
 func newHandlerForTest(t *testing.T, repo Repository) *Handler {

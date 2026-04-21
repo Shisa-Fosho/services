@@ -15,10 +15,11 @@ type Repository interface {
 	// ListCategories returns all categories ordered by name.
 	ListCategories(ctx context.Context) ([]*Category, error)
 
-	// UpdateCategory changes the name and slug of an existing category.
-	// Returns ErrNotFound if no category has the given id, or ErrDuplicateSlug
-	// if the new slug collides with another existing category.
-	UpdateCategory(ctx context.Context, id, name, slug string) error
+	// UpdateCategory changes the name and slug of an existing category and
+	// returns the updated row. Returns ErrNotFound if no category has the
+	// given id, or ErrDuplicateSlug if the new slug collides with another
+	// existing category.
+	UpdateCategory(ctx context.Context, id, name, slug string) (*Category, error)
 
 	// DeleteCategory removes a category by id. Returns ErrNotFound if no
 	// category has the given id.

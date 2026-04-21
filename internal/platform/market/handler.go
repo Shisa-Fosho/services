@@ -66,8 +66,7 @@ func (handler *Handler) createCategory(w http.ResponseWriter, r *http.Request) {
 			httputil.ErrorResponse(w, http.StatusConflict, "slug already in use")
 			return
 		}
-		handler.logger.Error("creating category", zap.Error(err))
-		httputil.ErrorResponse(w, http.StatusInternalServerError, "internal error")
+		handler.internalError(w, "creating category", err)
 		return
 	}
 	_ = httputil.EncodeJSON(w, http.StatusCreated, toCategoryResponse(cat))
@@ -90,23 +89,16 @@ func (handler *Handler) updateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := handler.repo.UpdateCategory(r.Context(), id, req.Name, req.Slug); err != nil {
+	updated, err := handler.repo.UpdateCategory(r.Context(), id, req.Name, req.Slug)
+	if err != nil {
 		switch {
 		case errors.Is(err, ErrNotFound):
 			httputil.ErrorResponse(w, http.StatusNotFound, "category not found")
 		case errors.Is(err, ErrDuplicateSlug):
 			httputil.ErrorResponse(w, http.StatusConflict, "slug already in use")
 		default:
-			handler.logger.Error("updating category", zap.Error(err), zap.String("id", id))
-			httputil.ErrorResponse(w, http.StatusInternalServerError, "internal error")
+			handler.internalError(w, "updating category", err)
 		}
-		return
-	}
-
-	updated, err := handler.repo.GetCategory(r.Context(), id)
-	if err != nil {
-		handler.logger.Error("fetching updated category", zap.Error(err), zap.String("id", id))
-		httputil.ErrorResponse(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	_ = httputil.EncodeJSON(w, http.StatusOK, toCategoryResponse(updated))
@@ -124,10 +116,14 @@ func (handler *Handler) deleteCategory(w http.ResponseWriter, r *http.Request) {
 			httputil.ErrorResponse(w, http.StatusNotFound, "category not found")
 			return
 		}
-		handler.logger.Error("deleting category", zap.Error(err), zap.String("id", id))
-		httputil.ErrorResponse(w, http.StatusInternalServerError, "internal error")
+		handler.internalError(w, "deleting category", err)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *Handler) internalError(w http.ResponseWriter, msg string, err error) {
+	handler.logger.Error(msg, zap.Error(err))
+	httputil.ErrorResponse(w, http.StatusInternalServerError, "internal server error")
 }

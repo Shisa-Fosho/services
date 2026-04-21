@@ -97,13 +97,12 @@ func TestPGRepository_UpdateCategory(t *testing.T) {
 	cats, _ := repo.ListCategories(ctx)
 	id := cats[0].ID
 
-	if err := repo.UpdateCategory(ctx, id, "Sports & Entertainment", "sports-ent"); err != nil {
+	got, err := repo.UpdateCategory(ctx, id, "Sports & Entertainment", "sports-ent")
+	if err != nil {
 		t.Fatalf("updating category: %v", err)
 	}
-
-	got, err := repo.GetCategory(ctx, id)
-	if err != nil {
-		t.Fatalf("getting updated category: %v", err)
+	if got.ID != id {
+		t.Errorf("id = %q, want %q", got.ID, id)
 	}
 	if got.Name != "Sports & Entertainment" {
 		t.Errorf("name = %q, want %q", got.Name, "Sports & Entertainment")
@@ -119,7 +118,7 @@ func TestPGRepository_UpdateCategory_NotFound(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	err := repo.UpdateCategory(ctx,
+	_, err := repo.UpdateCategory(ctx,
 		"00000000-0000-0000-0000-000000000000", "Ghost", "ghost")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
@@ -146,7 +145,7 @@ func TestPGRepository_UpdateCategory_DuplicateSlug(t *testing.T) {
 		}
 	}
 
-	err := repo.UpdateCategory(ctx, politicsID, "Politics", "sports")
+	_, err := repo.UpdateCategory(ctx, politicsID, "Politics", "sports")
 	if !errors.Is(err, ErrDuplicateSlug) {
 		t.Errorf("expected ErrDuplicateSlug, got: %v", err)
 	}
