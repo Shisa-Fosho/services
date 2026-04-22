@@ -23,13 +23,14 @@ arguments:
    - If all blockers are closed, note this and proceed normally.
 3. Parse the issue title to derive a branch name: `{issue_number}-{short-kebab-description}`
 4. Ensure working tree is clean: `git status --porcelain`
-5. Create and checkout branch from main: `git checkout main && git pull && git checkout -b {branch_name}`
+5. Create the branch via the **`create-branch`** skill, which guarantees the branch is based on a freshly fetched `origin/main` rather than the current HEAD. Never run ad-hoc `git checkout -b` here.
 6. Move the issue to "In Progress" on the project board and assign it:
    - `gh issue edit {issue_number} --repo Shisa-Fosho/services --add-assignee @me`
    - Move to In Progress: `gh project item-edit --project-id PVT_kwDOEC3v5M4BUX8i --id {item_id} --field-id PVTSSF_lADOEC3v5M4BUX8izhBgiFs --single-select-option-id 47fc9ee4`
    - To get the item ID, run: `gh project item-list 2 --owner Shisa-Fosho --format json --limit 50 | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const i=d.items.find(x=>x.title.includes('{issue_title_fragment}')); if(i) console.log(i.id); else console.error('item not found');"`
 7. Enter plan mode to discuss approach before writing code
-8. **Size check (during planning):** After exploring the codebase and designing the implementation, estimate the total hand-written LOC (excluding generated code and tests). The target is **≤ 800 LOC of production code per PR**.
+8. Check if the issue has a parent and if so read the parent and any sibling issues so that you can gain full context around how the issue fits into the greater epic.
+9. **Size check (during planning):** After exploring the codebase and designing the implementation, estimate the total hand-written LOC (excluding generated code and tests). The target is **≤ 800 LOC of production code per PR**.
    - If the estimate exceeds 800 LOC, do NOT proceed with a single large implementation. Instead:
      ```
      ⚠ SIZE LIMIT — estimated ~{N} LOC exceeds the 800 LOC target.
