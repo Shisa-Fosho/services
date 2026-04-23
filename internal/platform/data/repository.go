@@ -66,3 +66,23 @@ type AdminRepository interface {
 	// lowercase form.
 	IsAdminWallet(ctx context.Context, address string) (bool, error)
 }
+
+// AdminAuditAction describes a single admin HTTP action to be recorded.
+type AdminAuditAction struct {
+	AdminAddress string
+	Method       string
+	Path         string
+	Status       int
+}
+
+// AdminAuditRepository is the narrow write interface consumed by the admin
+// audit middleware. A separate interface keeps the middleware's injection
+// surface minimal and lets tests use a tiny in-memory fake.
+//
+// Implementations must be safe for concurrent use.
+type AdminAuditRepository interface {
+	// RecordAdminAction appends a single audit log entry. Failures should be
+	// returned to the caller; the middleware logs and swallows them so the
+	// underlying request is unaffected.
+	RecordAdminAction(ctx context.Context, action *AdminAuditAction) error
+}

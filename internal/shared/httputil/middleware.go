@@ -26,24 +26,37 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
-// statusWriter wraps http.ResponseWriter to capture the status code.
-type statusWriter struct {
+// StatusWriter wraps http.ResponseWriter to capture the status code for
+// middleware that observes response outcomes (logging, audit trails, etc.).
+// Zero value is usable with Code defaulting to 0 until the handler writes;
+// use NewStatusWriter to get the 200-default wrapper.
+type StatusWriter struct {
 	http.ResponseWriter
-	code    int
+	Code    int
 	written bool
 }
 
-func (writer *statusWriter) WriteHeader(code int) {
+// NewStatusWriter wraps w and defaults Code to 200 (matching stdlib behavior
+// when a handler writes a body without calling WriteHeader).
+func NewStatusWriter(w http.ResponseWriter) *StatusWriter {
+	return &StatusWriter{ResponseWriter: w, Code: http.StatusOK}
+}
+
+// WriteHeader captures the status code on the first call and forwards to
+// the wrapped ResponseWriter.
+func (writer *StatusWriter) WriteHeader(code int) {
 	if !writer.written {
-		writer.code = code
+		writer.Code = code
 		writer.written = true
 	}
 	writer.ResponseWriter.WriteHeader(code)
 }
 
-func (writer *statusWriter) Write(data []byte) (int, error) {
+// Write forwards to the wrapped ResponseWriter, defaulting Code to 200 if
+// the handler wrote a body without first calling WriteHeader.
+func (writer *StatusWriter) Write(data []byte) (int, error) {
 	if !writer.written {
-		writer.code = http.StatusOK
+		writer.Code = http.StatusOK
 		writer.written = true
 	}
 	return writer.ResponseWriter.Write(data)
@@ -55,14 +68,14 @@ func Logging(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			writer := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+			writer := NewStatusWriter(w)
 
 			next.ServeHTTP(writer, r)
 
 			logger.Info("http request",
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
-				zap.Int("status", writer.code),
+				zap.Int("status", writer.Code),
 				zap.Duration("duration", time.Since(start)),
 				zap.String("request_id", observability.RequestIDFrom(r.Context())),
 			)

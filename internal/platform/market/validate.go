@@ -17,6 +17,10 @@ func ValidateEvent(event *Event, now time.Time) error {
 		return fmt.Errorf("title is required: %w", ErrInvalidEvent)
 	}
 
+	if event.CategoryID == "" {
+		return fmt.Errorf("category_id is required: %w", ErrInvalidEvent)
+	}
+
 	if !event.EndDate.After(now) {
 		return fmt.Errorf("end date must be in the future: %w", ErrInvalidEvent)
 	}
@@ -75,6 +79,69 @@ func ValidateMarket(market *Market) error {
 func ValidateStatusTransition(from, to Status) error {
 	if !ValidTransition(from, to) {
 		return fmt.Errorf("cannot transition from %s to %s: %w", from, to, ErrInvalidTransition)
+	}
+	return nil
+}
+
+// ValidateEventUpdate checks a partial event update for shape violations.
+// Enforces non-empty strings when a field is being set, and a non-negative
+// featured_sort_order. Returns ErrInvalidEvent wrapping a descriptive message.
+func ValidateEventUpdate(update *EventUpdate) error {
+	if update == nil ||
+		(update.Title == nil &&
+			update.Description == nil &&
+			update.CategoryID == nil &&
+			update.Featured == nil &&
+			update.FeaturedSortOrder == nil) {
+		return fmt.Errorf("no fields to update: %w", ErrInvalidEvent)
+	}
+	if update.Title != nil && *update.Title == "" {
+		return fmt.Errorf("title cannot be empty: %w", ErrInvalidEvent)
+	}
+	if update.CategoryID != nil && *update.CategoryID == "" {
+		return fmt.Errorf("category_id cannot be empty: %w", ErrInvalidEvent)
+	}
+	if update.FeaturedSortOrder != nil && *update.FeaturedSortOrder < 0 {
+		return fmt.Errorf("featured_sort_order must be non-negative: %w", ErrInvalidEvent)
+	}
+	return nil
+}
+
+// ValidateFeeRate checks that the market id is non-empty and the fee rate
+// is within [MinFeeBps, MaxFeeBps]. Returns ErrInvalidFeeRate wrapping a
+// descriptive message on failure.
+func ValidateFeeRate(rate *FeeRate) error {
+	if rate == nil {
+		return fmt.Errorf("rate is nil: %w", ErrInvalidFeeRate)
+	}
+	if rate.MarketID == "" {
+		return fmt.Errorf("market_id is required: %w", ErrInvalidFeeRate)
+	}
+	if rate.FeeRateBps < MinFeeBps || rate.FeeRateBps > MaxFeeBps {
+		return fmt.Errorf("fee_rate_bps %d out of range [%d, %d]: %w",
+			rate.FeeRateBps, MinFeeBps, MaxFeeBps, ErrInvalidFeeRate)
+	}
+	return nil
+}
+
+// ValidateMarketUpdate checks a partial market update for shape violations.
+// Enforces non-empty strings when a field is being set. Returns
+// ErrInvalidMarket wrapping a descriptive message.
+func ValidateMarketUpdate(update *MarketUpdate) error {
+	if update == nil ||
+		(update.Question == nil &&
+			update.OutcomeYesLabel == nil &&
+			update.OutcomeNoLabel == nil) {
+		return fmt.Errorf("no fields to update: %w", ErrInvalidMarket)
+	}
+	if update.Question != nil && *update.Question == "" {
+		return fmt.Errorf("question cannot be empty: %w", ErrInvalidMarket)
+	}
+	if update.OutcomeYesLabel != nil && *update.OutcomeYesLabel == "" {
+		return fmt.Errorf("outcome_yes_label cannot be empty: %w", ErrInvalidMarket)
+	}
+	if update.OutcomeNoLabel != nil && *update.OutcomeNoLabel == "" {
+		return fmt.Errorf("outcome_no_label cannot be empty: %w", ErrInvalidMarket)
 	}
 	return nil
 }

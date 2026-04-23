@@ -187,6 +187,40 @@ func (repo *PGRepository) ListEvents(ctx context.Context, statuses []Status) ([]
 	return events, nil
 }
 
+// UpdateEvent applies a partial update to an event's metadata and returns
+// the resulting row. Any argument bound as SQL NULL (i.e. a nil pointer on
+// the EventUpdate) falls through COALESCE to the existing column value, so
+// only fields the admin set are actually changed.
+func (repo *PGRepository) UpdateEvent(ctx context.Context, id string, update *EventUpdate) (*Event, error) {
+	if err := ValidateEventUpdate(update); err != nil {
+		return nil, fmt.Errorf("updating event %s: %w", id, err)
+	}
+	rows, err := repo.pool.Query(ctx,
+		`UPDATE events SET
+		    title               = COALESCE($1, title),
+		    description         = COALESCE($2, description),
+		    category_id         = COALESCE($3, category_id),
+		    featured            = COALESCE($4, featured),
+		    featured_sort_order = COALESCE($5, featured_sort_order),
+		    updated_at          = now()
+		 WHERE id = $6
+		 RETURNING *`,
+		update.Title, update.Description, update.CategoryID,
+		update.Featured, update.FeaturedSortOrder, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating event %s: %w", id, err)
+	}
+	event, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Event])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("updating event %s: %w", id, ErrNotFound)
+		}
+		return nil, fmt.Errorf("updating event %s: %w", id, err)
+	}
+	return event, nil
+}
+
 // CreateMarket persists a new market. Validates input via ValidateMarket
 // before persisting. Returns ErrInvalidMarket for shape violations,
 // ErrDuplicateSlug if the slug already exists.
@@ -288,12 +322,43 @@ func (repo *PGRepository) ListMarketsByEvent(ctx context.Context, eventID string
 	return markets, nil
 }
 
+// UpdateMarketMetadata applies a partial update to a market's editable
+// fields and returns the resulting row. Any argument bound as SQL NULL
+// falls through COALESCE to the existing column value.
+func (repo *PGRepository) UpdateMarketMetadata(ctx context.Context, id string, update *MarketUpdate) (*Market, error) {
+	if err := ValidateMarketUpdate(update); err != nil {
+		return nil, fmt.Errorf("updating market %s: %w", id, err)
+	}
+	rows, err := repo.pool.Query(ctx,
+		`UPDATE markets SET
+		    question          = COALESCE($1, question),
+		    outcome_yes_label = COALESCE($2, outcome_yes_label),
+		    outcome_no_label  = COALESCE($3, outcome_no_label),
+		    updated_at        = now()
+		 WHERE id = $4
+		 RETURNING *`,
+		update.Question, update.OutcomeYesLabel, update.OutcomeNoLabel, id,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating market %s: %w", id, err)
+	}
+	market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("updating market %s: %w", id, ErrNotFound)
+		}
+		return nil, fmt.Errorf("updating market %s: %w", id, err)
+	}
+	return market, nil
+}
+
 // UpdateStatus changes the status of a market. Validates the transition
-// before executing the update.
-func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status Status) error {
+// inside a transaction holding a row lock, then returns the updated row
+// via UPDATE ... RETURNING — no extra round-trip.
+func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status Status) (*Market, error) {
 	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("updating market status: beginning transaction: %w", err)
+		return nil, fmt.Errorf("updating market status: beginning transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -303,27 +368,31 @@ func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status St
 	).Scan(&current)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("updating market %s status: %w", id, ErrNotFound)
+			return nil, fmt.Errorf("updating market %s status: %w", id, ErrNotFound)
 		}
-		return fmt.Errorf("updating market status: reading current: %w", err)
+		return nil, fmt.Errorf("updating market status: reading current: %w", err)
 	}
 
 	if err := ValidateStatusTransition(current, status); err != nil {
-		return err
+		return nil, err
 	}
 
-	_, err = tx.Exec(ctx,
-		`UPDATE markets SET status = $1, updated_at = now() WHERE id = $2`,
+	rows, err := tx.Query(ctx,
+		`UPDATE markets SET status = $1, updated_at = now() WHERE id = $2 RETURNING *`,
 		status, id,
 	)
 	if err != nil {
-		return fmt.Errorf("updating market %s status: %w", id, err)
+		return nil, fmt.Errorf("updating market %s status: %w", id, err)
+	}
+	market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
+	if err != nil {
+		return nil, fmt.Errorf("updating market %s status: %w", id, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("updating market status: committing: %w", err)
+		return nil, fmt.Errorf("updating market status: committing: %w", err)
 	}
-	return nil
+	return market, nil
 }
 
 // UpdateMarketPrices updates the current prices, volume, and open interest.
@@ -340,6 +409,47 @@ func (repo *PGRepository) UpdateMarketPrices(ctx context.Context, id string, pri
 		return fmt.Errorf("updating market %s prices: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// GetFeeRate returns the stored rate for a market, or ErrNotFound if absent.
+func (repo *PGRepository) GetFeeRate(ctx context.Context, marketID string) (*FeeRate, error) {
+	rate := &FeeRate{}
+	err := repo.pool.QueryRow(ctx,
+		`SELECT market_id, fee_rate_bps, updated_at FROM market_fee_rates WHERE market_id = $1`,
+		marketID,
+	).Scan(&rate.MarketID, &rate.FeeRateBps, &rate.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("getting fee rate for market %s: %w", marketID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("getting fee rate for market %s: %w", marketID, err)
+	}
+	return rate, nil
+}
+
+// UpsertFeeRate validates and writes a fee rate for a market. A missing
+// market_id surfaces as ErrNotFound via the FK constraint.
+func (repo *PGRepository) UpsertFeeRate(ctx context.Context, rate *FeeRate) (*FeeRate, error) {
+	if err := ValidateFeeRate(rate); err != nil {
+		return nil, fmt.Errorf("upserting fee rate: %w", err)
+	}
+	result := &FeeRate{}
+	err := repo.pool.QueryRow(ctx,
+		`INSERT INTO market_fee_rates (market_id, fee_rate_bps, updated_at)
+		 VALUES ($1, $2, now())
+		 ON CONFLICT (market_id) DO UPDATE SET
+		     fee_rate_bps = EXCLUDED.fee_rate_bps,
+		     updated_at = now()
+		 RETURNING market_id, fee_rate_bps, updated_at`,
+		rate.MarketID, rate.FeeRateBps,
+	).Scan(&result.MarketID, &result.FeeRateBps, &result.UpdatedAt)
+	if err != nil {
+		if postgres.IsForeignKeyViolation(err) {
+			return nil, fmt.Errorf("upserting fee rate for market %s: %w", rate.MarketID, ErrNotFound)
+		}
+		return nil, fmt.Errorf("upserting fee rate for market %s: %w", rate.MarketID, err)
+	}
+	return result, nil
 }
 
 // statusSlice converts Status values to int16 for pgx ANY() binding.

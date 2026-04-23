@@ -50,6 +50,20 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Name: admin_audit_log; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.admin_audit_log (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    admin_address text NOT NULL,
+    method text NOT NULL,
+    path text NOT NULL,
+    status smallint NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: affiliate_earnings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -114,7 +128,7 @@ CREATE TABLE public.events (
     slug text NOT NULL,
     title text NOT NULL,
     description text DEFAULT ''::text NOT NULL,
-    category_id uuid,
+    category_id uuid NOT NULL,
     event_type smallint NOT NULL,
     resolution_config jsonb DEFAULT '{}'::jsonb NOT NULL,
     status smallint DEFAULT 0 NOT NULL,
@@ -123,6 +137,18 @@ CREATE TABLE public.events (
     featured_sort_order smallint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: market_fee_rates; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.market_fee_rates (
+    market_id uuid NOT NULL,
+    fee_rate_bps integer NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT market_fee_rates_fee_rate_bps_check CHECK (((fee_rate_bps >= 0) AND (fee_rate_bps <= 1000)))
 );
 
 
@@ -287,6 +313,14 @@ CREATE TABLE public.users (
 
 
 --
+-- Name: admin_audit_log admin_audit_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admin_audit_log
+    ADD CONSTRAINT admin_audit_log_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: affiliate_earnings affiliate_earnings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -348,6 +382,14 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_slug_unique UNIQUE (slug);
+
+
+--
+-- Name: market_fee_rates market_fee_rates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_fee_rates
+    ADD CONSTRAINT market_fee_rates_pkey PRIMARY KEY (market_id);
 
 
 --
@@ -468,6 +510,13 @@ ALTER TABLE ONLY public.users
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_username_unique UNIQUE (username);
+
+
+--
+-- Name: idx_admin_audit_log_admin_created; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_admin_audit_log_admin_created ON public.admin_audit_log USING btree (admin_address, created_at DESC);
 
 
 --
@@ -659,6 +708,14 @@ ALTER TABLE ONLY public.api_keys
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id);
+
+
+--
+-- Name: market_fee_rates market_fee_rates_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.market_fee_rates
+    ADD CONSTRAINT market_fee_rates_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id) ON DELETE CASCADE;
 
 
 --

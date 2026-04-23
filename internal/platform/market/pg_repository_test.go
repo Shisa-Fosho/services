@@ -19,10 +19,22 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	// Truncate in reverse FK order.
 	_, err := pool.Exec(ctx,
-		`TRUNCATE markets, events, categories CASCADE`)
+		`TRUNCATE market_fee_rates, markets, events, categories CASCADE`)
 	if err != nil {
 		t.Fatalf("cleaning tables: %v", err)
 	}
+}
+
+// seedCategory creates a category with a unique slug and returns its ID.
+// Events require a non-null category_id, so every event-creating test needs
+// a fixture like this.
+func seedCategory(t *testing.T, repo *PGRepository, slug string) string {
+	t.Helper()
+	cat := &Category{Name: slug, Slug: slug}
+	if err := repo.CreateCategory(context.Background(), cat); err != nil {
+		t.Fatalf("seeding category %q: %v", slug, err)
+	}
+	return cat.ID
 }
 
 func TestPGRepository_CreateAndGetCategory(t *testing.T) {
@@ -191,10 +203,12 @@ func TestPGRepository_CreateAndGetEvent(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
+	catID := seedCategory(t, repo, "politics")
 	event := &Event{
 		Slug:             "us-election-2024",
 		Title:            "2024 US Presidential Election",
 		Description:      "Who will win?",
+		CategoryID:       catID,
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
 		Status:           StatusActive,
@@ -230,9 +244,11 @@ func TestPGRepository_GetEventBySlug(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
+	catID := seedCategory(t, repo, "general")
 	event := &Event{
 		Slug:             "slug-lookup-test",
 		Title:            "Slug Lookup",
+		CategoryID:       catID,
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
 		Status:           StatusActive,
@@ -257,9 +273,11 @@ func TestPGRepository_CreateEvent_DuplicateSlug(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
+	catID := seedCategory(t, repo, "general")
 	event := &Event{
 		Slug:             "dup-event",
 		Title:            "Original",
+		CategoryID:       catID,
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
 		Status:           StatusActive,
@@ -294,6 +312,7 @@ func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
+	catID := seedCategory(t, repo, "general")
 	for _, slug := range []string{"active-event", "paused-event"} {
 		status := StatusActive
 		if slug == "paused-event" {
@@ -302,6 +321,7 @@ func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
 		event := &Event{
 			Slug:             slug,
 			Title:            slug,
+			CategoryID:       catID,
 			EventType:        EventTypeBinary,
 			ResolutionConfig: json.RawMessage(`{}`),
 			Status:           status,
@@ -427,8 +447,12 @@ func TestPGRepository_UpdateStatus(t *testing.T) {
 	}
 	id := markets[0].ID
 
-	if err := repo.UpdateStatus(ctx, id, StatusPaused); err != nil {
+	updated, err := repo.UpdateStatus(ctx, id, StatusPaused)
+	if err != nil {
 		t.Fatalf("updating status to paused: %v", err)
+	}
+	if updated.Status != StatusPaused {
+		t.Errorf("returned market status = %s, want %s", updated.Status, StatusPaused)
 	}
 
 	got, err := repo.GetMarket(ctx, id)
@@ -465,12 +489,12 @@ func TestPGRepository_UpdateStatus_InvalidTransition(t *testing.T) {
 	// Resolve the market first.
 	markets, _ := repo.ListMarkets(ctx, nil)
 	id := markets[0].ID
-	if err := repo.UpdateStatus(ctx, id, StatusResolved); err != nil {
+	if _, err := repo.UpdateStatus(ctx, id, StatusResolved); err != nil {
 		t.Fatalf("resolving market: %v", err)
 	}
 
 	// Try to go back to active — should fail.
-	err := repo.UpdateStatus(ctx, id, StatusActive)
+	_, err := repo.UpdateStatus(ctx, id, StatusActive)
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Errorf("expected ErrInvalidTransition, got: %v", err)
 	}
@@ -532,5 +556,254 @@ func TestPGRepository_UpdateMarketPrices_NotFound(t *testing.T) {
 	err := repo.UpdateMarketPrices(ctx, "00000000-0000-0000-0000-000000000000", 50, 50, 0, 0)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestPGRepository_UpdateEvent(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	origCat := seedCategory(t, repo, "sports")
+	newCat := seedCategory(t, repo, "politics")
+
+	event := &Event{
+		Slug:             "updatable-event",
+		Title:            "Original",
+		Description:      "Original description",
+		CategoryID:       origCat,
+		EventType:        EventTypeBinary,
+		ResolutionConfig: json.RawMessage(`{}`),
+		Status:           StatusActive,
+		EndDate:          time.Now().Add(30 * 24 * time.Hour),
+	}
+	if err := repo.CreateEvent(ctx, event); err != nil {
+		t.Fatalf("creating event: %v", err)
+	}
+	events, _ := repo.ListEvents(ctx, nil)
+	id := events[0].ID
+
+	newTitle := "Updated Title"
+	featured := true
+	got, err := repo.UpdateEvent(ctx, id, &EventUpdate{
+		Title:      &newTitle,
+		CategoryID: &newCat,
+		Featured:   &featured,
+	})
+	if err != nil {
+		t.Fatalf("updating event: %v", err)
+	}
+	if got.Title != newTitle {
+		t.Errorf("title = %q, want %q", got.Title, newTitle)
+	}
+	if got.Description != "Original description" {
+		t.Errorf("description unexpectedly changed: %q", got.Description)
+	}
+	if got.CategoryID != newCat {
+		t.Errorf("category_id = %q, want %q", got.CategoryID, newCat)
+	}
+	if !got.Featured {
+		t.Error("featured = false, want true")
+	}
+
+	// Partial update: only title changes; category remains newCat.
+	newerTitle := "Another Update"
+	unchanged, err := repo.UpdateEvent(ctx, id, &EventUpdate{Title: &newerTitle})
+	if err != nil {
+		t.Fatalf("partial update: %v", err)
+	}
+	if unchanged.Title != newerTitle {
+		t.Errorf("title = %q, want %q", unchanged.Title, newerTitle)
+	}
+	if unchanged.CategoryID != newCat {
+		t.Errorf("category changed during partial update: %q, want %q", unchanged.CategoryID, newCat)
+	}
+}
+
+func TestPGRepository_UpdateEvent_NotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	title := "x"
+	_, err := repo.UpdateEvent(ctx, "00000000-0000-0000-0000-000000000000", &EventUpdate{Title: &title})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestPGRepository_UpdateMarketMetadata(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	market := &Market{
+		Slug:            "metadata-test",
+		Question:        "Original?",
+		OutcomeYesLabel: "Yes",
+		OutcomeNoLabel:  "No",
+		TokenIDYes:      "ty",
+		TokenIDNo:       "tn",
+		ConditionID:     "c1",
+		Status:          StatusActive,
+		PriceYes:        50,
+		PriceNo:         50,
+	}
+	if err := repo.CreateMarket(ctx, market); err != nil {
+		t.Fatalf("creating market: %v", err)
+	}
+	markets, _ := repo.ListMarkets(ctx, nil)
+	id := markets[0].ID
+
+	newQuestion := "Updated?"
+	newYes := "Absolutely"
+	got, err := repo.UpdateMarketMetadata(ctx, id, &MarketUpdate{
+		Question:        &newQuestion,
+		OutcomeYesLabel: &newYes,
+	})
+	if err != nil {
+		t.Fatalf("updating market metadata: %v", err)
+	}
+	if got.Question != newQuestion {
+		t.Errorf("question = %q, want %q", got.Question, newQuestion)
+	}
+	if got.OutcomeYesLabel != newYes {
+		t.Errorf("yes label = %q, want %q", got.OutcomeYesLabel, newYes)
+	}
+	if got.OutcomeNoLabel != "No" {
+		t.Errorf("no label unexpectedly changed: %q", got.OutcomeNoLabel)
+	}
+	if got.Status != StatusActive {
+		t.Errorf("status unexpectedly changed: %s", got.Status)
+	}
+}
+
+func TestPGRepository_UpdateMarketMetadata_NotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	q := "x"
+	_, err := repo.UpdateMarketMetadata(ctx, "00000000-0000-0000-0000-000000000000", &MarketUpdate{Question: &q})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+// seedMarketForFeeRate creates the category+market fixture chain that
+// market_fee_rates' FK requires, and returns the market id.
+func seedMarketForFeeRate(t *testing.T, repo *PGRepository, slug string) string {
+	t.Helper()
+	ctx := context.Background()
+	catID := seedCategory(t, repo, slug+"-cat")
+	event := &Event{
+		Slug:             slug + "-event",
+		Title:            slug,
+		CategoryID:       catID,
+		EventType:        EventTypeBinary,
+		ResolutionConfig: json.RawMessage(`{}`),
+		Status:           StatusActive,
+		EndDate:          time.Now().Add(30 * 24 * time.Hour),
+	}
+	if err := repo.CreateEvent(ctx, event); err != nil {
+		t.Fatalf("seeding event: %v", err)
+	}
+	mkt := &Market{
+		Slug:            slug,
+		Question:        "Q?",
+		OutcomeYesLabel: "Yes",
+		OutcomeNoLabel:  "No",
+		TokenIDYes:      "ty-" + slug,
+		TokenIDNo:       "tn-" + slug,
+		ConditionID:     "c-" + slug,
+		Status:          StatusActive,
+		PriceYes:        50,
+		PriceNo:         50,
+	}
+	if err := repo.CreateMarket(ctx, mkt); err != nil {
+		t.Fatalf("seeding market: %v", err)
+	}
+	markets, err := repo.ListMarkets(ctx, nil)
+	if err != nil || len(markets) == 0 {
+		t.Fatalf("listing markets: %v", err)
+	}
+	return markets[0].ID
+}
+
+func TestPGRepository_GetFeeRate_NotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, err := repo.GetFeeRate(ctx, "00000000-0000-0000-0000-000000000000")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestPGRepository_UpsertFeeRate_InsertThenUpdate(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	marketID := seedMarketForFeeRate(t, repo, "fee-upsert")
+
+	got, err := repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: 25})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if got.FeeRateBps != 25 {
+		t.Errorf("fee_rate_bps = %d, want 25", got.FeeRateBps)
+	}
+
+	got, err = repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: 75})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if got.FeeRateBps != 75 {
+		t.Errorf("fee_rate_bps = %d, want 75", got.FeeRateBps)
+	}
+
+	read, err := repo.GetFeeRate(ctx, marketID)
+	if err != nil {
+		t.Fatalf("get rate: %v", err)
+	}
+	if read.FeeRateBps != 75 {
+		t.Errorf("read fee_rate_bps = %d, want 75", read.FeeRateBps)
+	}
+}
+
+func TestPGRepository_UpsertFeeRate_MarketNotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, err := repo.UpsertFeeRate(ctx, &FeeRate{
+		MarketID:   "00000000-0000-0000-0000-000000000000",
+		FeeRateBps: 10,
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestPGRepository_UpsertFeeRate_Invalid(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	marketID := seedMarketForFeeRate(t, repo, "fee-invalid")
+
+	_, err := repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: -1})
+	if !errors.Is(err, ErrInvalidFeeRate) {
+		t.Errorf("expected ErrInvalidFeeRate, got: %v", err)
 	}
 }

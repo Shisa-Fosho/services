@@ -161,15 +161,23 @@ func run() error {
 	})
 	sessionHandler.RegisterRoutes(mux, limiter.Middleware("auth", ratelimit.KeyByIP))
 
-	// Market admin handlers. Admin middleware stacks JWT authentication, the
-	// admin_wallets check, and the per-admin rate limiter. Order matters:
-	// the limiter sits inside RequireAdmin so only authenticated admin
-	// requests consume bucket tokens.
+	// Admin middleware chain (outermost first):
+	//   Authenticate → RequireAdmin → ratelimit("admin", KeyByUser) → AuditAdminAction → handler
+	// Ordering:
+	//   • Authenticate must run first so RequireAdmin and KeyByUser can read
+	//     the user address from context.
+	//   • The limiter sits inside RequireAdmin so only authenticated admin
+	//     requests consume bucket tokens.
+	//   • AuditAdminAction sits innermost so it observes the final response
+	//     status and can skip logging on non-2xx.
 	adminLimit := limiter.Middleware("admin", ratelimit.KeyByUser)
+	auditAdmin := platformauth.AuditAdminAction(repo, logger)
 	adminMiddleware := func(next http.Handler) http.Handler {
 		return platformauth.Authenticate(jwtMgr)(
 			platformauth.RequireAdmin(repo)(
-				adminLimit(next),
+				adminLimit(
+					auditAdmin(next),
+				),
 			),
 		)
 	}

@@ -12,6 +12,7 @@ func validEvent() *Event {
 		Slug:             "test-event",
 		Title:            "Test Event",
 		Description:      "A test event.",
+		CategoryID:       "550e8400-e29b-41d4-a716-446655440000",
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
 		Status:           StatusActive,
@@ -58,12 +59,9 @@ func TestValidateEvent(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "with category ID is valid",
-			modify: func(event *Event) {
-				catID := "550e8400-e29b-41d4-a716-446655440000"
-				event.CategoryID = &catID
-			},
-			wantErr: false,
+			name:    "empty category id",
+			modify:  func(event *Event) { event.CategoryID = "" },
+			wantErr: true,
 		},
 	}
 
@@ -178,6 +176,124 @@ func TestValidateMarket(t *testing.T) {
 			}
 			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidMarket) {
 				t.Errorf("expected ErrInvalidMarket, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateEventUpdate(t *testing.T) {
+	t.Parallel()
+
+	title := "New"
+	empty := ""
+	catID := "550e8400-e29b-41d4-a716-446655440000"
+	featured := true
+	validOrder := int16(10)
+	negOrder := int16(-1)
+
+	tests := []struct {
+		name    string
+		update  *EventUpdate
+		wantErr bool
+	}{
+		{"nil update", nil, true},
+		{"all fields nil is empty", &EventUpdate{}, true},
+		{"title only is valid", &EventUpdate{Title: &title}, false},
+		{"featured only is valid", &EventUpdate{Featured: &featured}, false},
+		{"set category with uuid is valid", &EventUpdate{CategoryID: &catID}, false},
+		{"empty title is invalid", &EventUpdate{Title: &empty}, true},
+		{"empty category id is invalid", &EventUpdate{CategoryID: &empty}, true},
+		{"negative sort order is invalid", &EventUpdate{FeaturedSortOrder: &negOrder}, true},
+		{"valid sort order", &EventUpdate{FeaturedSortOrder: &validOrder}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateEventUpdate(tt.update)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidEvent) {
+				t.Errorf("expected ErrInvalidEvent, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateMarketUpdate(t *testing.T) {
+	t.Parallel()
+
+	question := "Will it?"
+	yes := "YES"
+	no := "NO"
+	empty := ""
+
+	tests := []struct {
+		name    string
+		update  *MarketUpdate
+		wantErr bool
+	}{
+		{"nil update", nil, true},
+		{"empty update", &MarketUpdate{}, true},
+		{"question only is valid", &MarketUpdate{Question: &question}, false},
+		{"yes label only is valid", &MarketUpdate{OutcomeYesLabel: &yes}, false},
+		{"no label only is valid", &MarketUpdate{OutcomeNoLabel: &no}, false},
+		{"empty question is invalid", &MarketUpdate{Question: &empty}, true},
+		{"empty yes label is invalid", &MarketUpdate{OutcomeYesLabel: &empty}, true},
+		{"empty no label is invalid", &MarketUpdate{OutcomeNoLabel: &empty}, true},
+		{"all fields set is valid", &MarketUpdate{Question: &question, OutcomeYesLabel: &yes, OutcomeNoLabel: &no}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateMarketUpdate(tt.update)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidMarket) {
+				t.Errorf("expected ErrInvalidMarket, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateFeeRate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rate    *FeeRate
+		wantErr bool
+	}{
+		{"nil rate", nil, true},
+		{"missing market id", &FeeRate{FeeRateBps: 10}, true},
+		{"zero is valid", &FeeRate{MarketID: "m1", FeeRateBps: 0}, false},
+		{"max is valid", &FeeRate{MarketID: "m1", FeeRateBps: MaxFeeBps}, false},
+		{"mid range valid", &FeeRate{MarketID: "m1", FeeRateBps: 25}, false},
+		{"negative bps", &FeeRate{MarketID: "m1", FeeRateBps: -1}, true},
+		{"above on-chain cap", &FeeRate{MarketID: "m1", FeeRateBps: MaxFeeBps + 1}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateFeeRate(tt.rate)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidFeeRate) {
+				t.Errorf("expected ErrInvalidFeeRate, got: %v", err)
 			}
 		})
 	}
