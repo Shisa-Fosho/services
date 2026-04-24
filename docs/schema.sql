@@ -289,8 +289,7 @@ CREATE TABLE public.trades (
     market_id uuid NOT NULL,
     price bigint NOT NULL,
     size bigint NOT NULL,
-    maker_fee bigint DEFAULT 0 NOT NULL,
-    taker_fee bigint DEFAULT 0 NOT NULL,
+    fee bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
