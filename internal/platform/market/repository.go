@@ -40,6 +40,13 @@ type Repository interface {
 	// is empty, all events are returned.
 	ListEvents(ctx context.Context, statuses []Status) ([]*Event, error)
 
+	// UpdateEvent applies a partial update to an event's editable metadata
+	// and returns the resulting row. Returns ErrNotFound if the id doesn't
+	// match a row, or ErrInvalidEvent if the update is empty/invalid. Slug,
+	// event type, end date, resolution config, and status are not mutable
+	// through this path.
+	UpdateEvent(ctx context.Context, id string, update *EventUpdate) (*Event, error)
+
 	// CreateMarket persists a new market. Validates input via ValidateMarket
 	// before persisting. Returns ErrInvalidMarket for shape violations,
 	// ErrDuplicateSlug if the slug already exists.
@@ -58,12 +65,29 @@ type Repository interface {
 	// ListMarketsByEvent returns all markets belonging to an event.
 	ListMarketsByEvent(ctx context.Context, eventID string) ([]*Market, error)
 
-	// UpdateStatus changes the status of a market. Returns
-	// ErrInvalidTransition if the transition is not allowed, or
-	// ErrNotFound if the market does not exist.
-	UpdateStatus(ctx context.Context, id string, status Status) error
+	// UpdateMarketMetadata applies a partial update to a market's editable
+	// fields (question, outcome labels) and returns the resulting row.
+	// Returns ErrNotFound if the id doesn't match a row, or ErrInvalidMarket
+	// if the update is empty/invalid. Slug, token IDs, condition ID, prices,
+	// and status are not mutable through this path.
+	UpdateMarketMetadata(ctx context.Context, id string, update *MarketUpdate) (*Market, error)
+
+	// UpdateStatus changes the status of a market and returns the updated
+	// row. Returns ErrInvalidTransition if the transition is not allowed,
+	// or ErrNotFound if the market does not exist.
+	UpdateStatus(ctx context.Context, id string, status Status) (*Market, error)
 
 	// UpdateMarketPrices updates the current prices, volume, and open interest
 	// for a market. Returns ErrNotFound if the market does not exist.
 	UpdateMarketPrices(ctx context.Context, id string, priceYes, priceNo, volume, openInterest int64) error
+
+	// GetFeeRate returns the stored fee rate for a market. Returns
+	// ErrNotFound if no rate has been set — callers typically treat that
+	// as "use the platform default" (currently 0 bps).
+	GetFeeRate(ctx context.Context, marketID string) (*FeeRate, error)
+
+	// UpsertFeeRate validates and writes a market's fee rate, returning
+	// the resulting row. Returns ErrInvalidFeeRate for shape violations
+	// and ErrNotFound if market_id does not reference an existing market.
+	UpsertFeeRate(ctx context.Context, rate *FeeRate) (*FeeRate, error)
 }

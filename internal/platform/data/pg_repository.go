@@ -209,3 +209,16 @@ func (repo *PGRepository) IsAdminWallet(ctx context.Context, address string) (bo
 	}
 	return exists, nil
 }
+
+// RecordAdminAction appends a single row to admin_audit_log.
+func (repo *PGRepository) RecordAdminAction(ctx context.Context, action *AdminAuditAction) error {
+	_, err := repo.pool.Exec(ctx,
+		`INSERT INTO admin_audit_log (admin_address, method, path, status)
+		 VALUES ($1, $2, $3, $4)`,
+		action.AdminAddress, action.Method, action.Path, action.Status,
+	)
+	if err != nil {
+		return fmt.Errorf("recording admin action: %w", err)
+	}
+	return nil
+}

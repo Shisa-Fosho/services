@@ -15,6 +15,15 @@ var (
 	ErrInvalidMarket     = errors.New("invalid market")
 	ErrInvalidTransition = errors.New("invalid status transition")
 	ErrDuplicateSlug     = errors.New("duplicate slug")
+	ErrInvalidFeeRate    = errors.New("invalid fee rate")
+)
+
+// Fee-rate bounds (basis points). MaxFeeBps matches the hard-coded on-chain
+// ceiling in Polymarket/ctf-exchange::Fees.sol (MAX_FEE_RATE_BIPS = 1000).
+// Setting a rate above this would cause the exchange to revert on fill.
+const (
+	MinFeeBps = 0
+	MaxFeeBps = 1000 // 10%
 )
 
 // EventType represents the structure of an event (binary or multi-outcome).
@@ -140,7 +149,7 @@ type Event struct {
 	Slug              string          `db:"slug"` // URL-friendly unique identifier.
 	Title             string          `db:"title"`
 	Description       string          `db:"description"`
-	CategoryID        *string         `db:"category_id"` // Nullable FK to categories.
+	CategoryID        string          `db:"category_id"` // FK to categories; required.
 	EventType         EventType       `db:"event_type"`
 	ResolutionConfig  json.RawMessage `db:"resolution_config"` // JSONB — always {} for manual resolution.
 	Status            Status          `db:"status"`
@@ -149,6 +158,42 @@ type Event struct {
 	FeaturedSortOrder int16           `db:"featured_sort_order"`
 	CreatedAt         time.Time       `db:"created_at"`
 	UpdatedAt         time.Time       `db:"updated_at"`
+}
+
+// EventUpdate describes a partial update to an event's editable metadata.
+// Non-nil fields are applied; nil fields are left unchanged. Category can
+// be changed to a different category but never cleared — the column is
+// non-nullable and every event must belong to a category. Slug, event_type,
+// end_date, resolution_config, and status are intentionally not included —
+// those are set at creation or via the dedicated status-transition endpoint.
+type EventUpdate struct {
+	Title             *string
+	Description       *string
+	CategoryID        *string
+	Featured          *bool
+	FeaturedSortOrder *int16
+}
+
+// MarketUpdate describes a partial update to a market's editable metadata.
+// Non-nil fields are applied; nil fields are left unchanged. Slug, token IDs,
+// condition ID, prices, volume, open interest, and status are intentionally
+// not editable via this path.
+//
+//nolint:revive // name mirrors EventUpdate and the external API shape.
+type MarketUpdate struct {
+	Question        *string
+	OutcomeYesLabel *string
+	OutcomeNoLabel  *string
+}
+
+// FeeRate is the operator-set fee rate for a single market in basis points
+// (1 bps = 0.01%). Mirrors Polymarket's model: every order carries a signed
+// `feeRateBps` in its EIP-712 payload; the rate is decided per-market by
+// the operator. See CLAUDE.md "Fee model" for details.
+type FeeRate struct {
+	MarketID   string    `db:"market_id"`
+	FeeRateBps int       `db:"fee_rate_bps"`
+	UpdatedAt  time.Time `db:"updated_at"`
 }
 
 // Market represents a single binary YES/NO prediction market.

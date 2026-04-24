@@ -286,11 +286,16 @@ not prior implementations, not pattern-matching from similar systems.
 
 ### Pinned reference versions
 
-| Repo | Pinned tag | Purpose |
+| Repo | Pinned ref | Purpose |
 |------|-----------|---------|
 | `Polymarket/clob-client` | `v5.8.2` | TypeScript SDK — auth headers, request signing, REST client |
 | `Polymarket/py-clob-client` | `v0.34.6` | Python SDK — cross-reference for TS |
 | `Polymarket/clob-order-utils` | `main` | Order signing primitives (pin when stable) |
+| `Polymarket/ctf-exchange` | `80cbf37` | Core CTFExchange contract — `Order` EIP-712 struct, fee enforcement, settlement |
+| `Polymarket/neg-risk-ctf-adapter` | `v2.0.0` | Multi-outcome (NegRisk) settlement adapter |
+| `Polymarket/exchange-fee-module` | `v2.0.0` | `FeeModule` + `NegRiskFeeModule` — admin-operated fee refund / withdrawal |
+| `Polymarket/conditional-tokens-contracts` | `v1.0.3` | Conditional token minting, splitting, merging, redemption |
+| `Polymarket/proxy-factories` | `master` | Poly Proxy / Gnosis Safe user-wallet factories (pin when stable) |
 
 Bump these versions intentionally when you decide to upgrade compatibility
 target. Do not drift — if planning work references a newer behavior, pin
@@ -333,11 +338,32 @@ headers, order signing, REST endpoints, response formats):
 ## Contracts (Read-Only Reference)
 
 ABIs consumed from the `contracts` repo via copy. No import dependency.
-- CTFExchange — binary market settlement
-- NegRiskCTFExchange — multi-outcome market settlement
-- ConditionalTokens — token minting, splitting, merging, redemption
-- Fee Module — on-chain fee collection
-- Proxy Factories — user wallet deployment
+Contract source is pinned — see the "Pinned reference versions" table above
+for authoritative repo refs. Fetch via `gh api repos/Polymarket/<repo>/contents/<path>?ref=<pin>`.
+
+- CTFExchange (`Polymarket/ctf-exchange`) — binary market settlement, per-order fee in EIP-712 payload
+- NegRiskCTFAdapter (`Polymarket/neg-risk-ctf-adapter`) — multi-outcome market settlement
+- ConditionalTokens (`Polymarket/conditional-tokens-contracts`) — token minting, splitting, merging, redemption
+- Fee Module (`Polymarket/exchange-fee-module`) — admin-operated fee refund / withdrawal (rates live per-order, not here)
+- Proxy Factories (`Polymarket/proxy-factories`) — user wallet deployment
+
+### Fee model (confirmed against pinned contracts)
+
+- **Fees are per-order, not global.** The `Order` EIP-712 struct in
+  `Polymarket/ctf-exchange` (`src/exchange/libraries/OrderStructs.sol`)
+  includes a `feeRateBps` field; users consent to the rate by signing it.
+- **Hard on-chain cap is `MAX_FEE_RATE_BIPS = 1000` (10%)**, a `pure`
+  constant in `src/exchange/mixins/Fees.sol`. Not admin-settable —
+  changing it requires a contract upgrade. Backend validators must not
+  allow signing orders above this, or the exchange will revert.
+- **Polymarket's REST API exposes `GET /fee-rate?token_id=X`** returning
+  a `base_fee` per market (see `clob-client/src/client.ts`
+  `getFeeRateBps(tokenID)`). Rates are per-token, not a single global value.
+- **No maker/taker split at the protocol level.** Each order carries a
+  single `feeRateBps`. Operator policy decides what rate to stamp onto
+  maker vs taker orders as they are built.
+- **FeeModule is not a rate source** — it's an admin-operated refund /
+  withdrawal utility that sits next to the exchange.
 
 ## Quick Reference
 

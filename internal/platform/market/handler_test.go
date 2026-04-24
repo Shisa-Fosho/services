@@ -9,18 +9,23 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 )
 
-// fakeRepo is an in-memory Repository double. Only the category methods are
-// implemented meaningfully — the rest return nil/zero to satisfy the
-// interface. Tests can set hooks to force errors.
+// fakeRepo is an in-memory Repository double for handler tests. The methods
+// exercised by admin handlers are implemented meaningfully; the rest return
+// nil/zero via the embedded Repository interface. Tests can set hooks to
+// force errors.
 type fakeRepo struct {
 	Repository // embed to get default-nil implementations of unused methods
 	byID       map[string]*Category
 	bySlug     map[string]*Category
 	nextID     int
+
+	events  map[string]*Event
+	markets map[string]*Market
 
 	createErr error
 	updateErr error
@@ -29,9 +34,117 @@ type fakeRepo struct {
 
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
-		byID:   map[string]*Category{},
-		bySlug: map[string]*Category{},
+		byID:    map[string]*Category{},
+		bySlug:  map[string]*Category{},
+		events:  map[string]*Event{},
+		markets: map[string]*Market{},
 	}
+}
+
+func (f *fakeRepo) putEvent(e *Event) *Event {
+	if e.ID == "" {
+		f.nextID++
+		e.ID = "evt-" + strconv.Itoa(f.nextID)
+	}
+	stored := *e
+	f.events[e.ID] = &stored
+	return &stored
+}
+
+func (f *fakeRepo) putMarket(m *Market) *Market {
+	if m.ID == "" {
+		f.nextID++
+		m.ID = "mkt-" + strconv.Itoa(f.nextID)
+	}
+	stored := *m
+	f.markets[m.ID] = &stored
+	return &stored
+}
+
+func (f *fakeRepo) UpdateEvent(_ context.Context, id string, update *EventUpdate) (*Event, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	if err := ValidateEventUpdate(update); err != nil {
+		return nil, err
+	}
+	e, ok := f.events[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if update.Title != nil {
+		e.Title = *update.Title
+	}
+	if update.Description != nil {
+		e.Description = *update.Description
+	}
+	if update.CategoryID != nil {
+		e.CategoryID = *update.CategoryID
+	}
+	if update.Featured != nil {
+		e.Featured = *update.Featured
+	}
+	if update.FeaturedSortOrder != nil {
+		e.FeaturedSortOrder = *update.FeaturedSortOrder
+	}
+	return e, nil
+}
+
+func (f *fakeRepo) UpdateMarketMetadata(_ context.Context, id string, update *MarketUpdate) (*Market, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	if err := ValidateMarketUpdate(update); err != nil {
+		return nil, err
+	}
+	m, ok := f.markets[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if update.Question != nil {
+		m.Question = *update.Question
+	}
+	if update.OutcomeYesLabel != nil {
+		m.OutcomeYesLabel = *update.OutcomeYesLabel
+	}
+	if update.OutcomeNoLabel != nil {
+		m.OutcomeNoLabel = *update.OutcomeNoLabel
+	}
+	return m, nil
+}
+
+func (f *fakeRepo) UpdateStatus(_ context.Context, id string, status Status) (*Market, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	m, ok := f.markets[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	if err := ValidateStatusTransition(m.Status, status); err != nil {
+		return nil, err
+	}
+	m.Status = status
+	return m, nil
+}
+
+func (f *fakeRepo) UpsertFeeRate(_ context.Context, rate *FeeRate) (*FeeRate, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	if err := ValidateFeeRate(rate); err != nil {
+		return nil, err
+	}
+	if _, ok := f.markets[rate.MarketID]; !ok {
+		return nil, ErrNotFound
+	}
+	stored := &FeeRate{
+		MarketID:   rate.MarketID,
+		FeeRateBps: rate.FeeRateBps,
+		UpdatedAt:  time.Now().UTC(),
+	}
+	out := *stored
+	return &out, nil
 }
 
 func (f *fakeRepo) CreateCategory(_ context.Context, cat *Category) error {
@@ -281,6 +394,281 @@ func TestHandler_DeleteCategory_NotFound(t *testing.T) {
 	rec := doRequest(t, mux, http.MethodDelete, "/admin/categories/missing-id", nil)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandler_UpdateEvent_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putEvent(&Event{
+		Title: "Original", Description: "desc",
+		CategoryID: "cat-original", Featured: false,
+	})
+	mux := registeredMux(t, repo)
+
+	newTitle := "Updated"
+	featured := true
+	body := mustJSON(t, eventUpdateRequest{Title: &newTitle, Featured: &featured})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/events/"+seed.ID, body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got eventResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Title != "Updated" {
+		t.Errorf("title = %q, want Updated", got.Title)
+	}
+	if !got.Featured {
+		t.Error("featured = false, want true")
+	}
+	if got.Description != "desc" {
+		t.Errorf("description unexpectedly changed: %q", got.Description)
+	}
+	if got.CategoryID != "cat-original" {
+		t.Errorf("category unexpectedly changed: %q", got.CategoryID)
+	}
+}
+
+func TestHandler_UpdateEvent_ChangeCategory(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putEvent(&Event{Title: "E", CategoryID: "cat-a"})
+	mux := registeredMux(t, repo)
+
+	newCat := "cat-b"
+	body := mustJSON(t, eventUpdateRequest{CategoryID: &newCat})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/events/"+seed.ID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got eventResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.CategoryID != "cat-b" {
+		t.Errorf("category_id = %q, want cat-b", got.CategoryID)
+	}
+}
+
+func TestHandler_UpdateEvent_EmptyCategoryRejected(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putEvent(&Event{Title: "E", CategoryID: "cat-a"})
+	mux := registeredMux(t, repo)
+
+	empty := ""
+	body := mustJSON(t, eventUpdateRequest{CategoryID: &empty})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/events/"+seed.ID, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 (category cannot be cleared)", rec.Code)
+	}
+}
+
+func TestHandler_UpdateEvent_NotFound(t *testing.T) {
+	t.Parallel()
+	mux := registeredMux(t, newFakeRepo())
+
+	title := "x"
+	body := mustJSON(t, eventUpdateRequest{Title: &title})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/events/missing-id", body)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandler_UpdateEvent_EmptyBody(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putEvent(&Event{Title: "E"})
+	mux := registeredMux(t, repo)
+
+	body := mustJSON(t, eventUpdateRequest{})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/events/"+seed.ID, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for empty update", rec.Code)
+	}
+}
+
+func TestHandler_UpdateMarket_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{
+		Question: "Old?", OutcomeYesLabel: "Yes", OutcomeNoLabel: "No",
+		Status: StatusActive, PriceYes: 50, PriceNo: 50,
+	})
+	mux := registeredMux(t, repo)
+
+	newQ := "New?"
+	body := mustJSON(t, marketUpdateRequest{Question: &newQ})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID, body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got marketResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Question != "New?" {
+		t.Errorf("question = %q, want New?", got.Question)
+	}
+	if got.OutcomeYesLabel != "Yes" {
+		t.Errorf("yes label unexpectedly changed: %q", got.OutcomeYesLabel)
+	}
+}
+
+func TestHandler_UpdateMarket_NotFound(t *testing.T) {
+	t.Parallel()
+	mux := registeredMux(t, newFakeRepo())
+
+	q := "x"
+	body := mustJSON(t, marketUpdateRequest{Question: &q})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/missing-id", body)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandler_PauseMarket_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive})
+	mux := registeredMux(t, repo)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/pause", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got marketResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "PAUSED" {
+		t.Errorf("status = %q, want PAUSED", got.Status)
+	}
+}
+
+func TestHandler_ResumeMarket_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusPaused})
+	mux := registeredMux(t, repo)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/resume", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got marketResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "ACTIVE" {
+		t.Errorf("status = %q, want ACTIVE", got.Status)
+	}
+}
+
+func TestHandler_PauseMarket_InvalidTransition(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusResolved})
+	mux := registeredMux(t, repo)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/pause", nil)
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409", rec.Code)
+	}
+}
+
+func TestHandler_PauseMarket_NotFound(t *testing.T) {
+	t.Parallel()
+	mux := registeredMux(t, newFakeRepo())
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/missing-id/pause", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandler_SetFeeRate_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive})
+	mux := registeredMux(t, repo)
+
+	body := mustJSON(t, feeRateRequest{FeeRateBps: 50})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/fee-rate", body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got feeRateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.MarketID != seed.ID {
+		t.Errorf("market_id = %q, want %q", got.MarketID, seed.ID)
+	}
+	if got.FeeRateBps != 50 {
+		t.Errorf("fee_rate_bps = %d, want 50", got.FeeRateBps)
+	}
+}
+
+func TestHandler_SetFeeRate_OutOfRange(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive})
+	mux := registeredMux(t, repo)
+
+	cases := []feeRateRequest{
+		{FeeRateBps: -1},
+		{FeeRateBps: MaxFeeBps + 1},
+		{FeeRateBps: 5000},
+	}
+	for _, tc := range cases {
+		body := mustJSON(t, tc)
+		rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/fee-rate", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("bps=%d: status = %d, want 400", tc.FeeRateBps, rec.Code)
+		}
+	}
+}
+
+func TestHandler_SetFeeRate_MarketNotFound(t *testing.T) {
+	t.Parallel()
+	mux := registeredMux(t, newFakeRepo())
+
+	body := mustJSON(t, feeRateRequest{FeeRateBps: 50})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/missing-id/fee-rate", body)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestHandler_SetFeeRate_MalformedJSON(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive})
+	mux := registeredMux(t, repo)
+
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/fee-rate", []byte("{not valid"))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandler_SetFeeRate_RepoError(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	repo.updateErr = errors.New("db down")
+	mux := registeredMux(t, repo)
+
+	body := mustJSON(t, feeRateRequest{FeeRateBps: 50})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/mkt-1/fee-rate", body)
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rec.Code)
 	}
 }
 
