@@ -147,8 +147,7 @@ type Trade struct {
 	MarketID     string    // Denormalized for query efficiency.
 	Price        int64     // Execution price in integer cents (1-99).
 	Size         int64     // Number of contracts traded.
-	MakerFee     int64     // Fee charged to maker, in cents.
-	TakerFee     int64     // Fee charged to taker, in cents.
+	Fee          int64     // Fee charged on the trade, from taker order's feeRateBps.
 	CreatedAt    time.Time // Set by database.
 }
 

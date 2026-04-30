@@ -283,8 +283,7 @@ func TestPGRepository_SaveTrade(t *testing.T) {
 		MarketID:     marketID,
 		Price:        50,
 		Size:         10,
-		MakerFee:     1,
-		TakerFee:     2,
+		Fee:          2,
 	}
 
 	if err := repo.SaveTrade(ctx, trade); err != nil {

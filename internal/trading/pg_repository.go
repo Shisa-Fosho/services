@@ -172,11 +172,11 @@ func (repo *PGRepository) SaveTrade(ctx context.Context, trade *Trade) error {
 	_, err = tx.Exec(ctx,
 		`INSERT INTO trades (
 			match_id, maker_order_id, taker_order_id, maker_address,
-			taker_address, market_id, price, size, maker_fee, taker_fee
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			taker_address, market_id, price, size, fee
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		trade.MatchID, trade.MakerOrderID, trade.TakerOrderID,
 		trade.MakerAddress, trade.TakerAddress, trade.MarketID,
-		trade.Price, trade.Size, trade.MakerFee, trade.TakerFee,
+		trade.Price, trade.Size, trade.Fee,
 	)
 	if err != nil {
 		return fmt.Errorf("saving trade: inserting row: %w", err)

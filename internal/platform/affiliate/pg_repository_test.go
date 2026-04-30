@@ -56,9 +56,9 @@ func insertTestTrade(t *testing.T, pool *pgxpool.Pool, matchID string) string {
 	err = pool.QueryRow(ctx,
 		`INSERT INTO trades (
 			match_id, maker_order_id, taker_order_id, maker_address,
-			taker_address, market_id, price, size, maker_fee, taker_fee
+			taker_address, market_id, price, size, fee
 		) VALUES ($1, $2, $3, '0xmaker1', '0xmaker2',
-			'00000000-0000-0000-0000-000000000000', 50, 100, 5, 5)
+			'00000000-0000-0000-0000-000000000000', 50, 100, 5)
 		RETURNING id`, matchID, orderID1, orderID2,
 	).Scan(&tradeID)
 	if err != nil {

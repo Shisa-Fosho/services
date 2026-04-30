@@ -8,8 +8,7 @@ CREATE TABLE IF NOT EXISTS trades (
     market_id       UUID        NOT NULL,
     price           BIGINT      NOT NULL,
     size            BIGINT      NOT NULL,
-    maker_fee       BIGINT      NOT NULL DEFAULT 0,
-    taker_fee       BIGINT      NOT NULL DEFAULT 0,
+    fee             BIGINT      NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
     CONSTRAINT trades_match_id_unique UNIQUE (match_id)
