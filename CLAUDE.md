@@ -40,7 +40,7 @@ Prediction market platform (Polymarket fork) — all Go backend services, shared
          │    ┌───────────────┘
          ▼    ▼
     ┌──────────────┐
-    │ NATS JetStream│
+    │NATS JetStream│
     └──────┬───────┘
            │
     ┌──────┴──────┐
@@ -114,12 +114,12 @@ internal/
   │   ├── postgres/         # Connection pooling, migration helpers
   │   ├── envutil/          # Env-var helpers (Get/MustGet) used by service main funcs
   │   ├── httputil/         # JSON helpers, HTTP middleware (RequestID, Logging, Recovery)
+  │   ├── ratelimit/        # Rate limiting utilities
   │   └── eth/              # Ethereum utilities (address validation, Safe address derivation)
   ├── platform/             # Platform service domain
   │   ├── auth/             #   ├─ session-auth handlers + JWT, SIWE, JWT middleware
   │   ├── market/           #   ├─ market domain
   │   ├── data/             #   ├─ data layer — users, refresh tokens, positions, SessionRepository
-  │   ├── admin/            #   ├─ admin domain
   │   └── affiliate/        #   └─ affiliate domain
   ├── trading/              # Trading service domain (Order, Trade, Book, Balance)
   │   └── auth/             #   └─ API-key lifecycle + HMAC primitives + AuthenticateAPIKey middleware
@@ -140,135 +140,8 @@ deploy/                     # Infrastructure configs
   ├── grafana/
   └── nats.conf
 docs/                       # Documentation
-  ├── conventions.md        # AUTHORITATIVE style guide
   └── architecture.md
 ```
-
-## Key Conventions
-
-**IMPORTANT: Always read `docs/conventions.md` before writing or reviewing code.** It is the authoritative style guide.
-
-### No Speculative Code
-
-Ship only code that is reached from real call sites within the current issue's
-scope. "Speculative" isn't limited to whole functions — the rule covers:
-
-- **Exported functions, methods, and option constructors** (`WithFoo`, `NewBar`).
-  Go's unused-code detection only fires on *internal* identifiers — exported
-  ones accumulate silently. You must check with grep, not trust the compiler.
-- **Parameters, struct fields, and interface methods** that no caller populates
-  or reads. An unused `MiddlewareOption`, config field, or context key counts.
-- **Parallel-API symmetry** across packages. If package A has a `WithAuthFailureHook`
-  and package B's version has no caller, don't mirror it into B "for consistency" —
-  that's dead code dressed up as tidiness. Different packages often *should* have
-  different surfaces because they protect different things.
-- **Placeholder hooks, feature flags, and config fields** wired up "in case"
-  a future issue needs them.
-
-If a future issue genuinely needs the missing piece, the build error (internal)
-or grep (exported) will surface it in seconds. Document expected prerequisites
-in the issue description — not in unreachable code.
-
-### Idempotency
-All write operations MUST be idempotent. Key source depends on operation:
-- Orders: EIP-712 signature hash (cryptographic, natural key)
-- Deposits: Polygon tx hash (on-chain, natural key)
-- Settlements: Match ID from CLOB engine
-- Withdrawals: Client-supplied key + 2FA gate + server-side duplicate check
-- Affiliate claims: Server-generated from user + action
-
-Idempotency keys checked inside the same database transaction as the write — never in a separate system.
-
-### Error Handling
-```go
-// Always wrap with context
-return fmt.Errorf("creating account %s: %w", id, err)
-
-// Use errors.Is/As for inspection
-if errors.Is(err, ErrNotFound) { ... }
-
-// Domain sentinel errors map to gRPC/HTTP status codes
-```
-
-### Context
-- First parameter, always: `func DoThing(ctx context.Context, ...)`
-- Never store in structs
-- Check `ctx.Err()` in loops
-- Propagate trace context through NATS messages
-
-### Logging
-Structured fields consistently:
-```go
-logger.Info("order matched",
-    zap.String("request_id", reqID),
-    zap.String("order_id", orderID),
-    zap.String("market_id", marketID),
-    zap.Duration("duration", elapsed),
-)
-```
-
-### Testing
-- Table-driven tests with subtests and `t.Parallel()`
-- Integration tests: `//go:build integration`
-- TDD workflow: write tests first, use `go build` to verify compilation, run `go test` once implementation exists
-
-### Database
-```go
-tx, err := pool.Begin(ctx)
-if err != nil { return fmt.Errorf("beginning transaction: %w", err) }
-defer tx.Rollback(ctx)
-// ... do work ...
-return tx.Commit(ctx)
-```
-- PostgreSQL with pgx driver
-- Idempotency checks inside transaction
-- Deterministic lock ordering to prevent deadlocks
-
-### NATS Messaging
-- Subjects: `{domain}.{action}` (e.g., `trading.match`, `indexer.deposit`)
-- JetStream for durable delivery (settlements, deposits)
-- Core NATS for ephemeral fan-out (book updates, price changes)
-- Always propagate OpenTelemetry trace context in message headers
-
-### Dependencies
-- **Before adding a new Go module**, always check `go.mod` and existing `internal/shared/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
-- Prefer using existing dependencies over adding new ones. If an existing library provides the required primitives, implement on top of it rather than pulling in a wrapper package.
-- During planning, explicitly audit `go.mod` for overlap before proposing any `go get`.
-
-## Service Bootstrap Pattern
-
-Every service follows this structure in `cmd/<service>/main.go`:
-1. Create cancellable context
-2. Init observability (logger + metrics + tracer)
-3. Start metrics HTTP server (goroutine)
-4. Connect to PostgreSQL, NATS
-5. Set up signal handling (SIGINT/SIGTERM)
-6. Create and start gRPC server (with reflection + health checks)
-7. Block until shutdown signal or error
-8. Graceful shutdown (drain NATS, close DB, stop gRPC)
-
-## Communication Patterns
-
-| Type | Pattern | Use Case |
-|------|---------|----------|
-| External → us | REST (HTTP) | Client orders, market queries, user data |
-| External → us | WebSocket | Real-time book, prices, fills |
-| Service → service (sync) | gRPC | Trading ↔ Platform queries |
-| Service → service (async) | NATS JetStream | Matches → settlement, deposits → balance |
-| Fan-out (ephemeral) | NATS Core | Book updates → WebSocket, price changes |
-
-## Key Design Decisions
-
-1. **Unified order book** — BUY YES @ $0.40 = SELL NO @ $0.60, doubles liquidity
-2. **Off-chain matching, on-chain settlement** — instant UX, blockchain trustlessness
-3. **Universal proxy wallets** — Gnosis Safe (wallet users), Poly Proxy (email users)
-4. **Instant confirmation** — off-chain ledger updated on match, settlement in background
-5. **NATS for all async** — JetStream (durable) + Core (ephemeral)
-6. **PostgreSQL JSONB** — flexible market config, resolution parameters
-7. **Split auth by service** — Platform service owns **session-auth endpoints** (`/auth/nonce`, `/auth/signup/*`, `/auth/login/*`, `/auth/refresh`, `/auth/logout`, `/auth/session`). Trading service owns the **Polymarket-compatible API-key lifecycle** (`/auth/derive-api-key`, `/auth/api-keys`, `/auth/api-key`). JWT verification lives in `internal/platform/auth` and is platform-only; HMAC/API-key verification lives in `internal/trading/auth` and is trading-only. This split matches Polymarket's own architectural division (gamma-api vs clob).
-8. **Two non-overlapping auth middlewares** — `Authenticate` (JWT-only) for platform-owned session endpoints; `AuthenticateAPIKey` (HMAC-only, via `APIKeyReader`) for Polymarket-compat CLOB endpoints. **No endpoint accepts both.** A valid JWT on a CLOB-protected route gets 401 — enforced by a dedicated test. Rationale: keeps the auth contract unambiguous for SDK consumers and prevents the security surface from doubling on trading routes.
-9. **No reverse proxy — direct service ports** — Services are reached directly: trading on :8080, platform on :8081. There is no longer a single unified entry point. Note: the Polymarket clob-client SDK assumed all endpoints (both session-auth and CLOB) were served from one host; with nginx removed, SDK clients must target each service port separately. Endpoint migration to consolidate this is a separate task.
-10. **Naming convention** — `internal/shared/` is cross-service infrastructure. Service-specific domain code lives under the service's own path (`internal/platform/auth/`, `internal/platform/market/`, `internal/platform/affiliate/`, `internal/trading/auth/`, etc.). Top-level `internal/` entries are either **services** (`platform/`, `trading/`, `settlement/`, `indexer/`) or **cross-service infrastructure** (`shared/`) — no other category.
 
 ## Git Conventions
 
@@ -277,93 +150,6 @@ Every service follows this structure in `cmd/<service>/main.go`:
 - main is protected
 - **Do NOT add `Co-Authored-By: Claude` or any AI attribution to commit messages**
 - **NEVER commit generated code** — `proto/gen/` is in `.gitignore`
-
-## Polymarket Compatibility
-
-Our REST API aims for compatibility with Polymarket's CLOB client SDKs. The
-upstream SDK source is the **authoritative spec** — not general knowledge,
-not prior implementations, not pattern-matching from similar systems.
-
-### Pinned reference versions
-
-| Repo | Pinned ref | Purpose |
-|------|-----------|---------|
-| `Polymarket/clob-client` | `v5.8.2` | TypeScript SDK — auth headers, request signing, REST client |
-| `Polymarket/py-clob-client` | `v0.34.6` | Python SDK — cross-reference for TS |
-| `Polymarket/clob-order-utils` | `main` | Order signing primitives (pin when stable) |
-| `Polymarket/ctf-exchange` | `80cbf37` | Core CTFExchange contract — `Order` EIP-712 struct, fee enforcement, settlement |
-| `Polymarket/neg-risk-ctf-adapter` | `v2.0.0` | Multi-outcome (NegRisk) settlement adapter |
-| `Polymarket/exchange-fee-module` | `v2.0.0` | `FeeModule` + `NegRiskFeeModule` — admin-operated fee refund / withdrawal |
-| `Polymarket/conditional-tokens-contracts` | `v1.0.3` | Conditional token minting, splitting, merging, redemption |
-| `Polymarket/proxy-factories` | `master` | Poly Proxy / Gnosis Safe user-wallet factories (pin when stable) |
-
-Bump these versions intentionally when you decide to upgrade compatibility
-target. Do not drift — if planning work references a newer behavior, pin
-higher first.
-
-### SDK verification rule
-
-Before planning or implementing any Polymarket-compatible surface (auth
-headers, order signing, REST endpoints, response formats):
-
-1. **Fetch the source from the pinned tag.** Use `gh api` so the fetch is
-   reproducible and tied to a specific commit:
-   ```bash
-   # List directory:
-   gh api repos/Polymarket/clob-client/contents/src/headers?ref=v5.8.2 --jq '.[].name'
-
-   # Read a file:
-   gh api repos/Polymarket/clob-client/contents/src/headers/index.ts?ref=v5.8.2 \
-     --jq '.content' | base64 -d
-   ```
-2. **Extract the exact contract** — header names, field names, types, ordering,
-   signing payload format — and document it in the plan.
-3. **Derive tests from SDK behavior, not from the implementation.** Writing
-   both code and tests from your own mental model creates a closed loop
-   where the tests validate the wrong assumption. Tests must assert what
-   a real SDK client sends and expects, including the **absence** of fields
-   the SDK doesn't use.
-4. **Cross-reference both SDKs** when one is ambiguous. If `clob-client` (TS)
-   and `py-clob-client` (Python) disagree, flag it to the user rather than
-   picking one silently.
-
-### Why this matters (incident log)
-
-- **PR #48 (nonce tracker)**: first implementation added an in-memory nonce
-  tracker keyed on a `POLY_NONCE` header for HMAC-signed requests. The actual
-  clob-client L2 headers don't send `POLY_NONCE` — it's only used on L1
-  (EIP-712) headers. Caught in review by fetching the SDK source; the entire
-  nonce subsystem was removed. Rule exists to prevent recurrence.
-
-## Contracts (Read-Only Reference)
-
-ABIs consumed from the `contracts` repo via copy. No import dependency.
-Contract source is pinned — see the "Pinned reference versions" table above
-for authoritative repo refs. Fetch via `gh api repos/Polymarket/<repo>/contents/<path>?ref=<pin>`.
-
-- CTFExchange (`Polymarket/ctf-exchange`) — binary market settlement, per-order fee in EIP-712 payload
-- NegRiskCTFAdapter (`Polymarket/neg-risk-ctf-adapter`) — multi-outcome market settlement
-- ConditionalTokens (`Polymarket/conditional-tokens-contracts`) — token minting, splitting, merging, redemption
-- Fee Module (`Polymarket/exchange-fee-module`) — admin-operated fee refund / withdrawal (rates live per-order, not here)
-- Proxy Factories (`Polymarket/proxy-factories`) — user wallet deployment
-
-### Fee model (confirmed against pinned contracts)
-
-- **Fees are per-order, not global.** The `Order` EIP-712 struct in
-  `Polymarket/ctf-exchange` (`src/exchange/libraries/OrderStructs.sol`)
-  includes a `feeRateBps` field; users consent to the rate by signing it.
-- **Hard on-chain cap is `MAX_FEE_RATE_BIPS = 1000` (10%)**, a `pure`
-  constant in `src/exchange/mixins/Fees.sol`. Not admin-settable —
-  changing it requires a contract upgrade. Backend validators must not
-  allow signing orders above this, or the exchange will revert.
-- **Polymarket's REST API exposes `GET /fee-rate?token_id=X`** returning
-  a `base_fee` per market (see `clob-client/src/client.ts`
-  `getFeeRateBps(tokenID)`). Rates are per-token, not a single global value.
-- **No maker/taker split at the protocol level.** Each order carries a
-  single `feeRateBps`. Operator policy decides what rate to stamp onto
-  maker vs taker orders as they are built.
-- **FeeModule is not a rate source** — it's an admin-operated refund /
-  withdrawal utility that sits next to the exchange.
 
 ## Quick Reference
 

@@ -6,7 +6,7 @@
 
 1. **Clarity over cleverness** — readable code wins
 2. **Fail fast, validate early** — reject bad input at the boundary
-3. **Idempotency for all writes** — key source varies by operation (see CLAUDE.md)
+3. **Idempotency for all writes** — key source varies by operation; checked inside the same DB transaction as the write, never separately
 4. **Observable from day one** — structured logs + metrics + traces on every service
 5. **Test what matters** — domain logic thoroughly, integration paths with real dependencies
 
@@ -139,6 +139,12 @@ return tx.Commit(ctx)
 - Public read endpoints (market data) are unauthenticated
 - Pagination: cursor-based for lists, not offset-based
 
+### Dependencies
+
+- **Before adding a new Go module**, always check `go.mod` and existing `internal/shared/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
+- Prefer using existing dependencies over adding new ones. If an existing library provides the required primitives, implement on top of it rather than pulling in a wrapper package.
+- During planning, explicitly audit `go.mod` for overlap before proposing any `go get`.
+
 ### Imports
 ```go
 import (
@@ -156,10 +162,50 @@ import (
 ```
 
 ### Performance
-- Profile before optimizing
-- Readability over micro-optimizations
-- Only trade readability for performance on proven hot paths (matching engine inner loop, WebSocket fan-out)
-- For low-volume operations (market creation, user signup), prefer clarity
+
+Default to the simplest correct implementation. Add complexity only on proven hot paths.
+
+| Call frequency | Examples | Rule |
+|----------------|----------|------|
+| Hot (high req/s) | Order matching, book fan-out | Optimize deliberately |
+| Warm | Trade history queries | Index + simple query |
+| Cold (rarely called) | Admin metadata updates, market creation | Simplest possible |
+
+**Before reaching for a complex implementation, ask:**
+- How often is this called? (Per-second vs. once a week?)
+- What does the naive approach actually cost at our scale?
+- Is this optimizing a real measured problem, or an imagined future one?
+
+**Antipattern:** A 50-line dynamic SQL builder that skips updating unchanged columns on a table that sees one write per month. A short, readable query that covers all cases is correct and fast enough permanently.
+
+### Idempotency
+
+All write operations MUST be idempotent. Key source depends on operation:
+- Orders: EIP-712 signature hash (cryptographic, natural key)
+- Deposits: Polygon tx hash (on-chain, natural key)
+- Settlements: Match ID from CLOB engine
+- Withdrawals: Client-supplied key + 2FA gate + server-side duplicate check
+- Affiliate claims: Server-generated from user + action
+
+Idempotency keys checked inside the same database transaction as the write — never in a separate system.
+
+### No Speculative Code
+
+Ship only code that is reached from real call sites within the current issue's scope. "Speculative" isn't limited to whole functions — the rule covers:
+
+- **Exported functions, methods, and option constructors** (`WithFoo`, `NewBar`). Go's unused-code detection only fires on *internal* identifiers — exported ones accumulate silently. You must check with grep, not trust the compiler.
+- **Parameters, struct fields, and interface methods** that no caller populates or reads. An unused `MiddlewareOption`, config field, or context key counts.
+- **Parallel-API symmetry** across packages. If package A has a `WithAuthFailureHook` and package B's version has no caller, don't mirror it into B "for consistency" — that's dead code dressed up as tidiness.
+- **Placeholder hooks, feature flags, and config fields** wired up "in case" a future issue needs them.
+
+If a future issue genuinely needs the missing piece, the build error (internal) or grep (exported) will surface it in seconds. Document expected prerequisites in the issue description — not in unreachable code.
+
+### Keeping CLAUDE.md In Sync
+
+Whenever you add, remove, or rename a directory as part of a task, ask the user
+whether they'd like to update the Code Organization section in `CLAUDE.md` to
+reflect the change. Don't update it silently — the user may have intentionally
+omitted a directory, or the change may be temporary.
 
 ### Security
 - Never log sensitive data
