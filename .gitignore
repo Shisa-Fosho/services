@@ -38,3 +38,4 @@ tmp/
 # Claude Code per-user local settings (machine-specific permissions, etc.)
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock

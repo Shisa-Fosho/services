@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"time"
@@ -10,15 +11,25 @@ import (
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 
-// Handler implements the platform service's market-domain HTTP endpoints.
-type Handler struct {
-	repo   Repository
-	logger *zap.Logger
+// configPublisher is the publishing surface the handler depends on. The
+// concrete *Publisher in this package satisfies it; tests inject stubs.
+type configPublisher interface {
+	PublishMarketConfig(market *Market) error
+	PublishStatusChange(ctx context.Context, marketID string, status Status) error
 }
 
-// NewHandler creates a new market handler.
-func NewHandler(repo Repository, logger *zap.Logger) *Handler {
-	return &Handler{repo: repo, logger: logger}
+// Handler implements the platform service's market-domain HTTP endpoints.
+type Handler struct {
+	repo      Repository
+	publisher configPublisher
+	logger    *zap.Logger
+}
+
+// NewHandler creates a new market handler. The publisher writes config
+// updates to NATS KV (consumed by trading) and publishes status changes
+// on Core NATS (consumed by the WebSocket server).
+func NewHandler(repo Repository, publisher configPublisher, logger *zap.Logger) *Handler {
+	return &Handler{repo: repo, publisher: publisher, logger: logger}
 }
 
 // RegisterAdminRoutes wires the admin-only category, event, and market
@@ -271,6 +282,11 @@ func (handler *Handler) updateMarket(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if err := handler.publisher.PublishMarketConfig(updated); err != nil {
+		handler.publishFailed(w, "market-config after metadata update",
+			"market metadata updated but config publish failed; please retry", id, err)
+		return
+	}
 	_ = httputil.EncodeJSON(w, http.StatusOK, toMarketResponse(updated))
 }
 
@@ -301,6 +317,27 @@ func (handler *Handler) transitionMarket(w http.ResponseWriter, r *http.Request,
 		}
 		return
 	}
+
+	// KV first: trading service caches market config off this bucket, so
+	// if the KV publish fails the cache will be stale and a paused market
+	// would still match orders. Surface the failure so the admin retries
+	// — the DB write is idempotent on retry (target == current).
+	statusField := zap.String("target_status", target.String())
+	if err := handler.publisher.PublishMarketConfig(updated); err != nil {
+		handler.publishFailed(w, "market-config after status change",
+			"market status updated but config publish failed; please retry", id, err, statusField)
+		return
+	}
+	// Status change second: WebSocket fan-out. If KV is consistent but
+	// this fails, clients won't see the live update — admin retry is the
+	// recovery path; on retry KV is a no-op put and the WS publish runs.
+	if err := handler.publisher.PublishStatusChange(r.Context(), id, target); err != nil {
+		handler.publishFailed(w, "status change",
+			"market status updated and config published, but status-change broadcast failed; please retry",
+			id, err, statusField)
+		return
+	}
+
 	_ = httputil.EncodeJSON(w, http.StatusOK, toMarketResponse(updated))
 }
 
@@ -316,11 +353,15 @@ type feeRateResponse struct {
 	UpdatedAt  string `json:"updated_at"`
 }
 
-func toFeeRateResponse(rate *FeeRate) feeRateResponse {
+func toFeeRateResponse(market *Market) feeRateResponse {
+	var bps int
+	if market.FeeRateBps != nil {
+		bps = int(*market.FeeRateBps)
+	}
 	return feeRateResponse{
-		MarketID:   rate.MarketID,
-		FeeRateBps: rate.FeeRateBps,
-		UpdatedAt:  rate.UpdatedAt.UTC().Format(time.RFC3339),
+		MarketID:   market.ID,
+		FeeRateBps: bps,
+		UpdatedAt:  market.UpdatedAt.UTC().Format(time.RFC3339),
 	}
 }
 
@@ -337,8 +378,7 @@ func (handler *Handler) setFeeRate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rate := &FeeRate{MarketID: marketID, FeeRateBps: req.FeeRateBps}
-	updated, err := handler.repo.UpsertFeeRate(r.Context(), rate)
+	updated, err := handler.repo.UpdateFeeRate(r.Context(), marketID, req.FeeRateBps)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidFeeRate):
@@ -346,8 +386,13 @@ func (handler *Handler) setFeeRate(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrNotFound):
 			httputil.ErrorResponse(w, http.StatusNotFound, "market not found")
 		default:
-			handler.internalError(w, "upserting fee rate", err)
+			handler.internalError(w, "updating fee rate", err)
 		}
+		return
+	}
+	if err := handler.publisher.PublishMarketConfig(updated); err != nil {
+		handler.publishFailed(w, "market-config after fee rate update",
+			"fee rate updated but config publish failed; please retry", marketID, err)
 		return
 	}
 	_ = httputil.EncodeJSON(w, http.StatusOK, toFeeRateResponse(updated))
@@ -356,4 +401,13 @@ func (handler *Handler) setFeeRate(w http.ResponseWriter, r *http.Request) {
 func (handler *Handler) internalError(w http.ResponseWriter, msg string, err error) {
 	handler.logger.Error(msg, zap.Error(err))
 	httputil.ErrorResponse(w, http.StatusInternalServerError, "internal server error")
+}
+
+// publishFailed logs a downstream-publish failure and writes a 502 response.
+// Used when the DB commit succeeded but a follow-on NATS publish failed —
+// caller must return after invoking.
+func (handler *Handler) publishFailed(w http.ResponseWriter, op, userMsg, marketID string, err error, extra ...zap.Field) {
+	fields := append([]zap.Field{zap.String("market_id", marketID), zap.Error(err)}, extra...)
+	handler.logger.Error("publishing "+op+" failed", fields...)
+	httputil.ErrorResponse(w, http.StatusBadGateway, userMsg)
 }

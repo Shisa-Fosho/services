@@ -186,16 +186,6 @@ type MarketUpdate struct {
 	OutcomeNoLabel  *string
 }
 
-// FeeRate is the operator-set fee rate for a single market in basis points
-// (1 bps = 0.01%). Mirrors Polymarket's model: every order carries a signed
-// `feeRateBps` in its EIP-712 payload; the rate is decided per-market by
-// the operator. See CLAUDE.md "Fee model" for details.
-type FeeRate struct {
-	MarketID   string    `db:"market_id"`
-	FeeRateBps int       `db:"fee_rate_bps"`
-	UpdatedAt  time.Time `db:"updated_at"`
-}
-
 // Market represents a single binary YES/NO prediction market.
 // A market may belong to an event (multi-outcome) or be standalone (event_id null).
 // All monetary amounts are in integer cents (1 = $0.01).
@@ -215,6 +205,7 @@ type Market struct {
 	PriceNo         int64     `db:"price_no"`      // Current NO price in cents (1-99).
 	Volume          int64     `db:"volume"`        // Total traded volume in cents.
 	OpenInterest    int64     `db:"open_interest"` // Current open interest in cents.
+	FeeRateBps      *int64    `db:"fee_rate_bps"`  // Nullable; nil means "use platform default" (0 bps).
 	CreatedAt       time.Time `db:"created_at"`
 	UpdatedAt       time.Time `db:"updated_at"`
 }

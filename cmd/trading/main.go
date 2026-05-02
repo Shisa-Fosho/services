@@ -78,11 +78,11 @@ func run() error {
 	defer pool.Close()
 
 	// NATS.
-	nc, err := sharednats.ClientFromEnv(logger, serviceName)
+	natsClient, err := sharednats.ClientFromEnv(logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("connecting to nats: %w", err)
 	}
-	defer nc.Close()
+	defer natsClient.Close()
 
 	// API-key auth dependencies. Trading owns the Polymarket-compatible
 	// API-key lifecycle (derive, list, revoke) — see internal/trading/auth.
