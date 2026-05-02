@@ -20,27 +20,10 @@ const ConfigBucket = "market-config"
 // fanned out to the WebSocket server.
 const statusSubjectPrefix = "platform.market."
 
-// ConfigEntry is the JSON payload written to the `market-config` KV
-// bucket, keyed by market ID. The trading service reads this on startup
-// (full scan) and watches for changes (incremental updates).
-//
-// TODO(human): define the struct fields with JSON tags.
-//
-// The issue specifies five required fields:
-//   - market_id      (string)  — UUID, the KV key but also embedded in payload for ergonomics
-//   - status         (string)  — one of ACTIVE / PAUSED / RESOLVED / VOIDED, from Status.String()
-//   - token_id_yes   (string)  — Conditional token ID for YES outcome
-//   - token_id_no    (string)  — Conditional token ID for NO outcome
-//   - fee_rate_bps   (?)       — see design decision below
-//
-// Design decision: should fee_rate_bps be `*int64` (pointer, distinguishes
-// "use platform default" from "explicit 0 bps") or `int64` (treats nil/0
-// equivalently because per the issue NULL means 0)? The Market struct uses
-// *int64. Either is defensible — match Market for honesty about NULL, or
-// simplify for trading-side consumers who just want a number to apply.
-//
-// Once you've defined the fields, fill in toConfigEntry below to
-// populate them from a *Market.
+// ConfigEntry is the JSON payload written to the `market-config` KV bucket,
+// keyed by market ID. FeeRateBps is a pointer so a nil value (no per-market
+// override) is distinguishable from an explicit 0 bps — consumers apply the
+// platform default in the nil case.
 type ConfigEntry struct {
 	MarketID   string `json:"market_id"`
 	Status     string `json:"status"`
@@ -49,8 +32,6 @@ type ConfigEntry struct {
 	FeeRateBps *int64 `json:"fee_rate_bps,omitempty"`
 }
 
-// toConfigEntry maps a Market into the KV payload shape. Lives next
-// to the struct definition so the mapping evolves alongside the schema.
 func toConfigEntry(market *Market) ConfigEntry {
 	return ConfigEntry{
 		MarketID:   market.ID,
