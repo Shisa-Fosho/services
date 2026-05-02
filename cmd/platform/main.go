@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/health"
 
@@ -83,11 +84,21 @@ func run() error {
 	defer pool.Close()
 
 	// NATS.
-	nc, err := sharednats.ClientFromEnv(logger, serviceName)
+	natsClient, err := sharednats.ClientFromEnv(logger, serviceName)
 	if err != nil {
 		return fmt.Errorf("connecting to nats: %w", err)
 	}
-	defer nc.Close()
+	defer natsClient.Close()
+
+	// Market-config KV bucket: trading service watches this for the
+	// canonical view of every market's status, token IDs, and fee rate.
+	marketConfigKV, err := natsClient.EnsureKeyValue(&nats.KeyValueConfig{
+		Bucket:      market.ConfigBucket,
+		Description: "Per-market config consumed by the trading service order-book cache.",
+	})
+	if err != nil {
+		return fmt.Errorf("ensuring market-config KV bucket: %w", err)
+	}
 
 	// Auth dependencies.
 	jwtCfg := platformauth.JWTConfig{
@@ -182,7 +193,8 @@ func run() error {
 		)
 	}
 	marketRepo := market.NewPGRepository(pool)
-	marketHandler := market.NewHandler(marketRepo, logger)
+	marketPublisher := market.NewPublisher(natsClient, marketConfigKV, logger)
+	marketHandler := market.NewHandler(marketRepo, marketPublisher, logger)
 	marketHandler.RegisterAdminRoutes(mux, adminMiddleware)
 
 	// Middleware stack (outermost first):

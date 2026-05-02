@@ -107,19 +107,12 @@ func ValidateEventUpdate(update *EventUpdate) error {
 	return nil
 }
 
-// ValidateFeeRate checks that the market id is non-empty and the fee rate
-// is within [MinFeeBps, MaxFeeBps]. Returns ErrInvalidFeeRate wrapping a
-// descriptive message on failure.
-func ValidateFeeRate(rate *FeeRate) error {
-	if rate == nil {
-		return fmt.Errorf("rate is nil: %w", ErrInvalidFeeRate)
-	}
-	if rate.MarketID == "" {
-		return fmt.Errorf("market_id is required: %w", ErrInvalidFeeRate)
-	}
-	if rate.FeeRateBps < MinFeeBps || rate.FeeRateBps > MaxFeeBps {
+// ValidateFeeRateBps checks that the fee rate is within [MinFeeBps, MaxFeeBps].
+// Returns ErrInvalidFeeRate wrapping a descriptive message on failure.
+func ValidateFeeRateBps(bps int) error {
+	if bps < MinFeeBps || bps > MaxFeeBps {
 		return fmt.Errorf("fee_rate_bps %d out of range [%d, %d]: %w",
-			rate.FeeRateBps, MinFeeBps, MaxFeeBps, ErrInvalidFeeRate)
+			bps, MinFeeBps, MaxFeeBps, ErrInvalidFeeRate)
 	}
 	return nil
 }

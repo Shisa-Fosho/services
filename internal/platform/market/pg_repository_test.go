@@ -19,7 +19,7 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	// Truncate in reverse FK order.
 	_, err := pool.Exec(ctx,
-		`TRUNCATE market_fee_rates, markets, events, categories CASCADE`)
+		`TRUNCATE markets, events, categories CASCADE`)
 	if err != nil {
 		t.Fatalf("cleaning tables: %v", err)
 	}
@@ -734,67 +734,52 @@ func seedMarketForFeeRate(t *testing.T, repo *PGRepository, slug string) string 
 	return markets[0].ID
 }
 
-func TestPGRepository_GetFeeRate_NotFound(t *testing.T) {
+func TestPGRepository_UpdateFeeRate_SetThenUpdate(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	_, err := repo.GetFeeRate(ctx, "00000000-0000-0000-0000-000000000000")
+	marketID := seedMarketForFeeRate(t, repo, "fee-update")
+
+	got, err := repo.UpdateFeeRate(ctx, marketID, 25)
+	if err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	if got.FeeRateBps == nil || *got.FeeRateBps != 25 {
+		t.Errorf("fee_rate_bps = %v, want 25", got.FeeRateBps)
+	}
+
+	got, err = repo.UpdateFeeRate(ctx, marketID, 75)
+	if err != nil {
+		t.Fatalf("second update: %v", err)
+	}
+	if got.FeeRateBps == nil || *got.FeeRateBps != 75 {
+		t.Errorf("fee_rate_bps = %v, want 75", got.FeeRateBps)
+	}
+
+	read, err := repo.GetMarket(ctx, marketID)
+	if err != nil {
+		t.Fatalf("get market: %v", err)
+	}
+	if read.FeeRateBps == nil || *read.FeeRateBps != 75 {
+		t.Errorf("read fee_rate_bps = %v, want 75", read.FeeRateBps)
+	}
+}
+
+func TestPGRepository_UpdateFeeRate_MarketNotFound(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, err := repo.UpdateFeeRate(ctx, "00000000-0000-0000-0000-000000000000", 10)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got: %v", err)
 	}
 }
 
-func TestPGRepository_UpsertFeeRate_InsertThenUpdate(t *testing.T) {
-	pool := postgres.TestPool(t)
-	cleanTables(t, pool)
-	repo := NewPGRepository(pool)
-	ctx := context.Background()
-
-	marketID := seedMarketForFeeRate(t, repo, "fee-upsert")
-
-	got, err := repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: 25})
-	if err != nil {
-		t.Fatalf("first upsert: %v", err)
-	}
-	if got.FeeRateBps != 25 {
-		t.Errorf("fee_rate_bps = %d, want 25", got.FeeRateBps)
-	}
-
-	got, err = repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: 75})
-	if err != nil {
-		t.Fatalf("second upsert: %v", err)
-	}
-	if got.FeeRateBps != 75 {
-		t.Errorf("fee_rate_bps = %d, want 75", got.FeeRateBps)
-	}
-
-	read, err := repo.GetFeeRate(ctx, marketID)
-	if err != nil {
-		t.Fatalf("get rate: %v", err)
-	}
-	if read.FeeRateBps != 75 {
-		t.Errorf("read fee_rate_bps = %d, want 75", read.FeeRateBps)
-	}
-}
-
-func TestPGRepository_UpsertFeeRate_MarketNotFound(t *testing.T) {
-	pool := postgres.TestPool(t)
-	cleanTables(t, pool)
-	repo := NewPGRepository(pool)
-	ctx := context.Background()
-
-	_, err := repo.UpsertFeeRate(ctx, &FeeRate{
-		MarketID:   "00000000-0000-0000-0000-000000000000",
-		FeeRateBps: 10,
-	})
-	if !errors.Is(err, ErrNotFound) {
-		t.Errorf("expected ErrNotFound, got: %v", err)
-	}
-}
-
-func TestPGRepository_UpsertFeeRate_Invalid(t *testing.T) {
+func TestPGRepository_UpdateFeeRate_Invalid(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -802,7 +787,7 @@ func TestPGRepository_UpsertFeeRate_Invalid(t *testing.T) {
 
 	marketID := seedMarketForFeeRate(t, repo, "fee-invalid")
 
-	_, err := repo.UpsertFeeRate(ctx, &FeeRate{MarketID: marketID, FeeRateBps: -1})
+	_, err := repo.UpdateFeeRate(ctx, marketID, -1)
 	if !errors.Is(err, ErrInvalidFeeRate) {
 		t.Errorf("expected ErrInvalidFeeRate, got: %v", err)
 	}

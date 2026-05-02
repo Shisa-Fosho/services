@@ -128,22 +128,21 @@ func (f *fakeRepo) UpdateStatus(_ context.Context, id string, status Status) (*M
 	return m, nil
 }
 
-func (f *fakeRepo) UpsertFeeRate(_ context.Context, rate *FeeRate) (*FeeRate, error) {
+func (f *fakeRepo) UpdateFeeRate(_ context.Context, marketID string, bps int) (*Market, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
-	if err := ValidateFeeRate(rate); err != nil {
+	if err := ValidateFeeRateBps(bps); err != nil {
 		return nil, err
 	}
-	if _, ok := f.markets[rate.MarketID]; !ok {
+	m, ok := f.markets[marketID]
+	if !ok {
 		return nil, ErrNotFound
 	}
-	stored := &FeeRate{
-		MarketID:   rate.MarketID,
-		FeeRateBps: rate.FeeRateBps,
-		UpdatedAt:  time.Now().UTC(),
-	}
-	out := *stored
+	rate := int64(bps)
+	m.FeeRateBps = &rate
+	m.UpdatedAt = time.Now().UTC()
+	out := *m
 	return &out, nil
 }
 
@@ -193,10 +192,50 @@ func (f *fakeRepo) DeleteCategory(_ context.Context, id string) error {
 	return nil
 }
 
+// fakePublisher records publish calls and lets tests force errors on either
+// PublishMarketConfig or PublishStatusChange. It satisfies configPublisher.
+type fakePublisher struct {
+	configErr error
+	statusErr error
+
+	configCalls []*Market
+	statusCalls []fakeStatusCall
+}
+
+type fakeStatusCall struct {
+	MarketID string
+	Status   Status
+}
+
+func (p *fakePublisher) PublishMarketConfig(market *Market) error {
+	if p.configErr != nil {
+		return p.configErr
+	}
+	cp := *market
+	p.configCalls = append(p.configCalls, &cp)
+	return nil
+}
+
+func (p *fakePublisher) PublishStatusChange(_ context.Context, marketID string, status Status) error {
+	if p.statusErr != nil {
+		return p.statusErr
+	}
+	p.statusCalls = append(p.statusCalls, fakeStatusCall{MarketID: marketID, Status: status})
+	return nil
+}
+
 func newHandlerForTest(t *testing.T, repo Repository) *Handler {
 	t.Helper()
 	logger := zap.NewNop()
-	return NewHandler(repo, logger)
+	return NewHandler(repo, &fakePublisher{}, logger)
+}
+
+// newHandlerWithPublisher is like newHandlerForTest but lets the caller
+// inject a fakePublisher with pre-set error hooks.
+func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configPublisher) *Handler {
+	t.Helper()
+	logger := zap.NewNop()
+	return NewHandler(repo, publisher, logger)
 }
 
 // passThroughAdmin is an "admin middleware" stand-in for handler tests:
@@ -669,6 +708,133 @@ func TestHandler_SetFeeRate_RepoError(t *testing.T) {
 	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/mkt-1/fee-rate", body)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
+	}
+}
+
+// muxWithPublisher mirrors registeredMux but lets the caller substitute a
+// fakePublisher with pre-set error hooks, for tests that exercise the
+// pause/resume/metadata publishing paths.
+func muxWithPublisher(t *testing.T, repo Repository, publisher configPublisher) *http.ServeMux {
+	t.Helper()
+	mux := http.NewServeMux()
+	h := newHandlerWithPublisher(t, repo, publisher)
+	h.RegisterAdminRoutes(mux, passThroughAdmin)
+	return mux
+}
+
+func TestHandler_PauseMarket_PublishesConfigAndStatus(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{}
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/pause", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Fatalf("PublishMarketConfig called %d times, want 1", len(pub.configCalls))
+	}
+	if pub.configCalls[0].Status != StatusPaused {
+		t.Errorf("config call market status = %s, want PAUSED", pub.configCalls[0].Status)
+	}
+	if len(pub.statusCalls) != 1 {
+		t.Fatalf("PublishStatusChange called %d times, want 1", len(pub.statusCalls))
+	}
+	if pub.statusCalls[0].Status != StatusPaused {
+		t.Errorf("status call status = %s, want PAUSED", pub.statusCalls[0].Status)
+	}
+}
+
+func TestHandler_PauseMarket_KVPublishFailureReturns502(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{configErr: errors.New("KV down")}
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/pause", nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	// DB write must still have committed — the market must be paused.
+	if repo.markets[seed.ID].Status != StatusPaused {
+		t.Errorf("market.Status = %s, want PAUSED — DB commit must succeed before KV publish",
+			repo.markets[seed.ID].Status)
+	}
+	// Status-change broadcast must NOT have been attempted: KV is the
+	// authoritative state for trading; if it's stale, broadcasting "paused"
+	// to WebSocket clients would mislead them.
+	if len(pub.statusCalls) != 0 {
+		t.Errorf("PublishStatusChange called %d times after KV failure, want 0", len(pub.statusCalls))
+	}
+}
+
+func TestHandler_PauseMarket_StatusPublishFailureReturns502(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{statusErr: errors.New("NATS down")}
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/"+seed.ID+"/pause", nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	// KV publish ran and succeeded — the failure was the second-stage broadcast.
+	if len(pub.configCalls) != 1 {
+		t.Errorf("PublishMarketConfig called %d times, want 1", len(pub.configCalls))
+	}
+}
+
+func TestHandler_UpdateMarket_KVPublishFailureReturns502(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Old?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{configErr: errors.New("KV down")}
+	mux := muxWithPublisher(t, repo, pub)
+
+	newQ := "New?"
+	body := mustJSON(t, marketUpdateRequest{Question: &newQ})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID, body)
+
+	// Telling the user "saved" when downstream cache wasn't updated is a lie.
+	// Without an outbox/reconciliation worker, a missed publish leaves trading
+	// reading stale config indefinitely — fail loudly so the admin retries.
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+}
+
+func TestHandler_SetFeeRate_PublishesConfig(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{}
+	mux := muxWithPublisher(t, repo, pub)
+
+	body := mustJSON(t, feeRateRequest{FeeRateBps: 50})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/fee-rate", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Fatalf("PublishMarketConfig called %d times, want 1", len(pub.configCalls))
+	}
+}
+
+func TestHandler_SetFeeRate_KVPublishFailureReturns502(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{configErr: errors.New("KV down")}
+	mux := muxWithPublisher(t, repo, pub)
+
+	body := mustJSON(t, feeRateRequest{FeeRateBps: 50})
+	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/fee-rate", body)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
 	}
 }
 

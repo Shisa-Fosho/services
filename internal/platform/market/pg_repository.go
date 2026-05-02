@@ -411,45 +411,32 @@ func (repo *PGRepository) UpdateMarketPrices(ctx context.Context, id string, pri
 	return nil
 }
 
-// GetFeeRate returns the stored rate for a market, or ErrNotFound if absent.
-func (repo *PGRepository) GetFeeRate(ctx context.Context, marketID string) (*FeeRate, error) {
-	rate := &FeeRate{}
-	err := repo.pool.QueryRow(ctx,
-		`SELECT market_id, fee_rate_bps, updated_at FROM market_fee_rates WHERE market_id = $1`,
-		marketID,
-	).Scan(&rate.MarketID, &rate.FeeRateBps, &rate.UpdatedAt)
+// UpdateFeeRate validates and writes a market's fee rate, returning the
+// updated row. Returns ErrInvalidFeeRate for out-of-range bps and
+// ErrNotFound if the market does not exist.
+func (repo *PGRepository) UpdateFeeRate(ctx context.Context, marketID string, bps int) (*Market, error) {
+	if err := ValidateFeeRateBps(bps); err != nil {
+		return nil, fmt.Errorf("updating fee rate: %w", err)
+	}
+	rows, err := repo.pool.Query(ctx,
+		`UPDATE markets
+		 SET    fee_rate_bps = $1,
+		        updated_at   = now()
+		 WHERE  id = $2
+		 RETURNING *`,
+		bps, marketID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("updating fee rate for market %s: %w", marketID, err)
+	}
+	market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("getting fee rate for market %s: %w", marketID, ErrNotFound)
+			return nil, fmt.Errorf("updating fee rate for market %s: %w", marketID, ErrNotFound)
 		}
-		return nil, fmt.Errorf("getting fee rate for market %s: %w", marketID, err)
+		return nil, fmt.Errorf("updating fee rate for market %s: %w", marketID, err)
 	}
-	return rate, nil
-}
-
-// UpsertFeeRate validates and writes a fee rate for a market. A missing
-// market_id surfaces as ErrNotFound via the FK constraint.
-func (repo *PGRepository) UpsertFeeRate(ctx context.Context, rate *FeeRate) (*FeeRate, error) {
-	if err := ValidateFeeRate(rate); err != nil {
-		return nil, fmt.Errorf("upserting fee rate: %w", err)
-	}
-	result := &FeeRate{}
-	err := repo.pool.QueryRow(ctx,
-		`INSERT INTO market_fee_rates (market_id, fee_rate_bps, updated_at)
-		 VALUES ($1, $2, now())
-		 ON CONFLICT (market_id) DO UPDATE SET
-		     fee_rate_bps = EXCLUDED.fee_rate_bps,
-		     updated_at = now()
-		 RETURNING market_id, fee_rate_bps, updated_at`,
-		rate.MarketID, rate.FeeRateBps,
-	).Scan(&result.MarketID, &result.FeeRateBps, &result.UpdatedAt)
-	if err != nil {
-		if postgres.IsForeignKeyViolation(err) {
-			return nil, fmt.Errorf("upserting fee rate for market %s: %w", rate.MarketID, ErrNotFound)
-		}
-		return nil, fmt.Errorf("upserting fee rate for market %s: %w", rate.MarketID, err)
-	}
-	return result, nil
+	return market, nil
 }
 
 // statusSlice converts Status values to int16 for pgx ANY() binding.

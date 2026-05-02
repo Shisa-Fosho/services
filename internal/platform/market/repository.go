@@ -81,13 +81,9 @@ type Repository interface {
 	// for a market. Returns ErrNotFound if the market does not exist.
 	UpdateMarketPrices(ctx context.Context, id string, priceYes, priceNo, volume, openInterest int64) error
 
-	// GetFeeRate returns the stored fee rate for a market. Returns
-	// ErrNotFound if no rate has been set — callers typically treat that
-	// as "use the platform default" (currently 0 bps).
-	GetFeeRate(ctx context.Context, marketID string) (*FeeRate, error)
-
-	// UpsertFeeRate validates and writes a market's fee rate, returning
-	// the resulting row. Returns ErrInvalidFeeRate for shape violations
-	// and ErrNotFound if market_id does not reference an existing market.
-	UpsertFeeRate(ctx context.Context, rate *FeeRate) (*FeeRate, error)
+	// UpdateFeeRate validates and writes a market's fee rate onto the
+	// markets row, returning the resulting market. Returns ErrInvalidFeeRate
+	// for out-of-range bps and ErrNotFound if marketID does not reference
+	// an existing market. Callers read the rate back via GetMarket.
+	UpdateFeeRate(ctx context.Context, marketID string, bps int) (*Market, error)
 }

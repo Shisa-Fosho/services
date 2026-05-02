@@ -18,6 +18,20 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
+-- Name: public; Type: SCHEMA; Schema: -; Owner: -
+--
+
+-- *not* creating schema, since initdb creates it
+
+
+--
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+--
+
+COMMENT ON SCHEMA public IS '';
+
+
+--
 -- Name: pgcrypto; Type: EXTENSION; Schema: -; Owner: -
 --
 
@@ -64,6 +78,17 @@ CREATE TABLE public.admin_audit_log (
 
 
 --
+-- Name: admin_wallets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.admin_wallets (
+    address text NOT NULL,
+    label text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: affiliate_earnings; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -90,7 +115,8 @@ CREATE TABLE public.api_keys (
     label text DEFAULT ''::text NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     revoked boolean DEFAULT false NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    passphrase_hash text DEFAULT ''::text NOT NULL
 );
 
 
@@ -141,18 +167,6 @@ CREATE TABLE public.events (
 
 
 --
--- Name: market_fee_rates; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.market_fee_rates (
-    market_id uuid NOT NULL,
-    fee_rate_bps integer NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT market_fee_rates_fee_rate_bps_check CHECK (((fee_rate_bps >= 0) AND (fee_rate_bps <= 1000)))
-);
-
-
---
 -- Name: markets; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -174,6 +188,8 @@ CREATE TABLE public.markets (
     open_interest bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    fee_rate_bps bigint,
+    CONSTRAINT markets_fee_rate_bps_check CHECK (((fee_rate_bps IS NULL) OR ((fee_rate_bps >= 0) AND (fee_rate_bps <= 1000)))),
     CONSTRAINT markets_open_interest_non_negative CHECK ((open_interest >= 0)),
     CONSTRAINT markets_volume_non_negative CHECK ((volume >= 0))
 );
@@ -320,6 +336,14 @@ ALTER TABLE ONLY public.admin_audit_log
 
 
 --
+-- Name: admin_wallets admin_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.admin_wallets
+    ADD CONSTRAINT admin_wallets_pkey PRIMARY KEY (address);
+
+
+--
 -- Name: affiliate_earnings affiliate_earnings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -381,14 +405,6 @@ ALTER TABLE ONLY public.events
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_slug_unique UNIQUE (slug);
-
-
---
--- Name: market_fee_rates market_fee_rates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.market_fee_rates
-    ADD CONSTRAINT market_fee_rates_pkey PRIMARY KEY (market_id);
 
 
 --
@@ -707,14 +723,6 @@ ALTER TABLE ONLY public.api_keys
 
 ALTER TABLE ONLY public.events
     ADD CONSTRAINT events_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id);
-
-
---
--- Name: market_fee_rates market_fee_rates_market_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.market_fee_rates
-    ADD CONSTRAINT market_fee_rates_market_id_fkey FOREIGN KEY (market_id) REFERENCES public.markets(id) ON DELETE CASCADE;
 
 
 --

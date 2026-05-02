@@ -265,27 +265,25 @@ func TestValidateMarketUpdate(t *testing.T) {
 	}
 }
 
-func TestValidateFeeRate(t *testing.T) {
+func TestValidateFeeRateBps(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		rate    *FeeRate
+		bps     int
 		wantErr bool
 	}{
-		{"nil rate", nil, true},
-		{"missing market id", &FeeRate{FeeRateBps: 10}, true},
-		{"zero is valid", &FeeRate{MarketID: "m1", FeeRateBps: 0}, false},
-		{"max is valid", &FeeRate{MarketID: "m1", FeeRateBps: MaxFeeBps}, false},
-		{"mid range valid", &FeeRate{MarketID: "m1", FeeRateBps: 25}, false},
-		{"negative bps", &FeeRate{MarketID: "m1", FeeRateBps: -1}, true},
-		{"above on-chain cap", &FeeRate{MarketID: "m1", FeeRateBps: MaxFeeBps + 1}, true},
+		{"zero is valid", 0, false},
+		{"max is valid", MaxFeeBps, false},
+		{"mid range valid", 25, false},
+		{"negative bps", -1, true},
+		{"above on-chain cap", MaxFeeBps + 1, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateFeeRate(tt.rate)
+			err := ValidateFeeRateBps(tt.bps)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
