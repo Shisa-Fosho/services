@@ -1,5 +1,19 @@
 # CLAUDE.md — Shisa Services
 
+## Required Reading
+
+**Before doing any task in this repo, read the following files in full.** They hold the project's coding conventions, architectural decisions, and Polymarket-compatibility rules. They are not optional — code that violates them will be rejected in review.
+
+- `docs/rules/conventions.md` — Go style, error handling, testing, validation, function decomposition, file organization
+- `docs/rules/design-decisions.md` — architecture-level decisions with rationale
+- `docs/rules/polymarket.md` — Polymarket SDK / contract compatibility rules
+
+`CLAUDE.md` and `AGENTS.md` are mirrors of each other and must hold identical content. **If you edit either, apply the same edit to the other in the same commit.** This is the only file pair that still requires manual mirroring — the rules content above is centralized in `docs/rules/` so it doesn't.
+
+Tool-specific harness files are not mirrored — they configure tool-specific behavior with no cross-tool equivalent:
+- Claude Code: `.claude/{settings,skills,agents,worktrees}/`
+- Codex: `.codex/config.toml` (if added) and `.agents/skills/` (Codex's canonical skills location)
+
 ## Project Overview
 
 Prediction market platform (Polymarket fork) — all Go backend services, shared packages, proto definitions, and infrastructure configs. Off-chain CLOB matching with on-chain Polygon settlement. USDC collateral.
@@ -148,7 +162,7 @@ docs/                       # Documentation
 - Branch format: `{issue#}-{short-description}` (e.g., `12-clob-matching-engine`)
 - All work via feature branches, PRs required
 - main is protected
-- **Do NOT add `Co-Authored-By: Claude` or any AI attribution to commit messages**
+- **Do NOT add `Co-Authored-By:` lines for AI tools, or any other AI attribution to commit messages** (applies whether the operator is using Claude Code, Codex, or any other AI coding tool)
 - **NEVER commit generated code** — `proto/gen/` is in `.gitignore`
 
 ## Quick Reference
@@ -162,3 +176,4 @@ docs/                       # Documentation
 | NATS | 8222 | NATS monitoring |
 | Prometheus | 9090 | Metrics collection |
 | Grafana | 3000 | Dashboards |
+
