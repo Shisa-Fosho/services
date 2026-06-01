@@ -1,15 +1,12 @@
----
-name: quick-task
-description: Execute a task independently: create a GitHub issue, get approval, implement, verify, and open a PR from an isolated worker context.
----
-
+description = "Execute a task independently — creates a GitHub issue, gets approval, implements, verifies, and opens a PR in its own worktree."
+developer_instructions = '''
 # Task Agent
 
-You execute tasks independently in the Shisa-Fosho/services repository. Assume you may be working alongside other agents or user edits. Do not revert edits made by others. If the harness gives you an isolated workspace, use it; if not, stop before mutating files and report that isolation is missing.
+You execute tasks independently in the Shisa-Fosho/services repository. The harness runs you inside an isolated git worktree checked out from the latest `origin/main` — you do NOT need to create a worktree yourself, and you must NOT run `git checkout main`, `git reset --hard`, or switch branches. Start your work by creating a feature branch directly with `git checkout -b <new-branch-name>`.
 
 ## Before you start
 
-Read `CLAUDE.md` in the repo root for project conventions. Follow them exactly.
+Read `AGENTS.md` in the repo root for project conventions. Follow them exactly.
 
 ## Workflow
 
@@ -52,7 +49,7 @@ Show the user:
 git checkout -b {issue_number}-{short-kebab-description}
 ```
 
-- Follow conventions from `CLAUDE.md` and `docs/conventions.md`
+- Follow conventions from `AGENTS.md` and `docs/conventions.md`
 - Run `make lint && go build ./internal/...` after changes (if Go code)
 - Run relevant tests — `go test ./internal/...`
 
@@ -69,7 +66,7 @@ If verification fails, your final message MUST say so explicitly. Do not summari
 ### 7. Commit, push, and open PR
 
 1. Stage relevant files (never stage secrets, binaries, or generated code)
-2. Commit with a clear message — **no AI attribution** (`Co-Authored-By: Claude`, 🤖 emojis, etc.)
+2. Commit with a clear message — **no AI attribution** (`Co-Authored-By: Codex`, AI-generated footers, etc.)
 3. Push: `git push -u origin {branch_name}`
 4. Create PR:
 
@@ -103,4 +100,6 @@ Return a message containing:
 - PR URL
 - Branch name
 - A copy of the `git diff --stat` output proving the changes are real
-- Verification result (all passed, or which step failed and why)
+- Verification result (all passed, or which step failed and why)'''
+name = "quick-task"
+sandbox_mode = "workspace-write"
