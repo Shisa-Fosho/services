@@ -165,6 +165,91 @@ If a `down` migration would drop test data you care about, copy it out before ru
 - Public read endpoints (market data) are unauthenticated
 - Pagination: cursor-based for lists, not offset-based
 
+### Function Decomposition
+
+Any function — handler, repo method, service-bootstrap routine, NATS consumer — that does multiple distinct things in sequence is a candidate for phase extraction once it grows past ~60 lines and has 3+ phases. Long top-to-bottom functions are not un-Go (the stdlib has plenty), but a function that's hard to follow because phases blur together IS a problem regardless of language.
+
+**Where this applies in this repo:**
+- HTTP handlers (parse → load → validate → mutate → publish → encode)
+- Repo transactional methods (begin tx → lock → validate → write → recompute aggregates → re-read → commit)
+- Service bootstrap in `cmd/*/main.go` (observability → DBs → NATS → handlers → register → block-on-signal → shutdown)
+- NATS consumers (decode → validate → mutate → ack)
+- Matching / settlement pipelines in the trading and settlement services
+
+**When to extract:**
+- Each helper must have a **good name** — a verb-phrase you'd want to read on the main path (`loadEventForVoid`, `verifyVoidChainState`, `lockEventForTransition`). If the best name you can come up with is `step3` or `doPart`, don't extract.
+- The phase has clear input/output boundaries — typically 2-4 parameters in, 1-2 values out.
+- The body is non-trivial (10+ lines, multiple early-returns, or both).
+
+**When NOT to extract:**
+- The helper would be a one-liner or near-one-liner.
+- It needs 5+ parameters / 3+ return values. That's a sign the seam is wrong — find a different cut, or leave inline.
+- The "phase" is just `validateRequestID()` or `writeNotFoundResponse()` — extractions that don't have meaningful names, just relocate code. That's the antipattern Go culture warns about.
+
+**Parameter hygiene.** Helpers take what they need, not god-objects. Don't pass `*http.Request` (handlers) or `*pgxpool.Pool` (repo helpers) when a `ctx` and the specific domain values would do. Grep-friendly and limits coupling. The exception is when the helper genuinely needs to operate on the larger object (e.g. a repo helper that must use the *same* `pgx.Tx` the caller began — see below).
+
+**Inline what stays inline.** Small error-mapping switches stay next to the call that produced the error — extracting them pushes status-code decisions away from the operation that triggered them. Same for one-line response encoding.
+
+#### HTTP-handler addendum: the `(value, ok)` / `(ok bool)` idiom
+
+HTTP handlers are special because `http.ResponseWriter` is a side-effect channel that doesn't propagate up the call stack like a return value does. The convention for handler helpers that may need to write an error response is:
+
+```go
+func (handler *Handler) loadEventForVoid(w http.ResponseWriter, ctx context.Context, eventID string) (*Event, bool) {
+    event, err := handler.repo.GetEvent(ctx, eventID)
+    if err != nil {
+        if errors.Is(err, ErrNotFound) {
+            httputil.ErrorResponse(w, http.StatusNotFound, "event not found")
+            return nil, false   // helper has already written the response
+        }
+        handler.internalError(w, "loading event", err)
+        return nil, false
+    }
+    // ...
+    return event, true
+}
+
+// Caller:
+event, ok := handler.loadEventForVoid(w, r.Context(), eventID)
+if !ok {
+    return    // helper wrote the response; nothing else to do
+}
+```
+
+For helpers that have only a pass/fail outcome (no value to return), use a plain `bool`. The contract is: **`ok == false` means the helper has already written the HTTP response.** The caller just returns.
+
+**Important: do NOT use this idiom outside HTTP handlers.** In a pure Go function with no side-effect channel like `w`, returning `(value, ok)` instead of `(value, error)` loses information — the caller knows it failed but not why, can't `errors.Is` / `errors.As`, can't wrap context. The `ok bool` is a HTTP-boundary convention only; outside that boundary, errors are first-class and should be returned as errors.
+
+`http.ResponseWriter` IS in scope for handler helpers — that's the whole point of the idiom. `*http.Request` should NOT be in scope unless the helper actually needs to read the body or URL path.
+
+### File Organization Within a Package
+
+Split source files to keep each one navigable, NOT to enforce visibility (Go doesn't need it) or to make types reusable (everything in the same package already is).
+
+**When to split:**
+- The file is hard to navigate because responsibilities are mixed. The trigger is "this file does N distinct things," not raw line count — a focused 800-line file is easier to read than a 200-line file mixing three resources.
+- The package has multiple distinct resources, OR a single resource has multiple type-discriminated sub-actions large enough to warrant separation.
+
+**When NOT to split:**
+- A small package with one resource. Keep `handler.go` as one file.
+- Don't split prophylactically. Only split once navigation actually hurts.
+
+**Naming:** `handler_<resource>.go` per resource (e.g. `handler_categories.go`, `handler_markets.go`, `handler_events.go`). Further split as `handler_<resource>_<subaction>.go` when a resource has multiple sub-actions large enough on their own — we did this for `handler_events_create.go` and `handler_events_resolve.go` because the binary/neg-risk URL split produced two substantial endpoints per sub-action.
+
+**The aggregator pattern.** The main `handler.go` owns:
+- The `Handler` struct definition.
+- `NewHandler` constructor.
+- `RegisterAdminRoutes` — every `mux.Handle(...)` line stays here, even when the handler function itself is in another file. One place to read the full URL surface.
+- Cross-resource error helpers (`internalError`, `chainError`, `publishFailed`).
+
+Per-resource files own: handler functions for that resource, their request/response types, conversion functions (`toMarketResponse`), and resource-local helpers.
+
+**Shared types live with their primary consumer.** A response type used across multiple files (e.g. `eventWithMarketsResponse` used by create, resolve, void) lives in the file whose handlers are its primary user. If there is no clear primary consumer, put the type in the aggregator file (`handler.go`) next to the cross-resource helpers.
+
+**Generalizes beyond handlers.** The aggregator + per-resource split applies to any growing source file in the package. If `pg_repository.go` outgrows itself, the pattern is: `pg_repository.go` keeps the struct + constructor + cross-resource helpers; `pg_repository_events.go`, `pg_repository_markets.go`, etc. own methods for those resources. Same logic for NATS consumers, settlement/matching pipelines, service bootstrap helpers.
+
+**Test file naming.** Two valid options: a single `<package>_test.go` for the whole package, OR mirroring the source split (`handler_markets_test.go`, `handler_events_test.go`, etc.). Either is idiomatic Go. Mirror the split when a single test file would exceed ~1500 lines or when test helpers cluster by resource. Otherwise one file is fine — pick whichever serves readability.
+
 ### Dependencies
 
 - **Before adding a new Go module**, always check `go.mod` and existing `internal/shared/` packages for libraries that already cover the need (including indirect dependencies that can be promoted to direct).
@@ -234,14 +319,14 @@ If a future issue genuinely needs the missing piece, the build error (internal) 
 2. `abigen` produces Go bindings under `internal/shared/eth/gen/<contract>/` from a `//go:generate` directive in `internal/shared/eth/generate.go`.
 3. The `gen/` directory is `.gitignore`d — generated code is regenerated on every fresh clone via `make build` (which depends on `make gen-contracts`).
 4. A thin reader wrapper in `internal/shared/eth/<contract>.go` exposes a narrow `*Reader` interface (e.g. `CTReader`, `NegRiskReader`) that hides the abigen verbosity and provides the surface handlers actually need.
-5. Service handlers declare *their own* local interface that is a subset of the shared reader, so the test fake stays minimal and the dependency surface is auditable per service.
+5. Service handlers depend on the shared reader interface directly (`eth.CTReader`, `eth.NegRiskReader`). Don't redeclare a local-package mirror unless the consumer genuinely uses a strict subset of the shared interface's methods — at that point a local interface earns its keep by shrinking the test fake. Mirroring a shared interface verbatim is the parallel-API-symmetry antipattern called out in "No Speculative Code" above.
 
 **Rules of thumb:**
 
 - One file per contract under `internal/shared/eth/` for the wrapper. Don't combine multiple contracts into one file — each is independently versioned.
-- The narrow reader interface ships in `internal/shared/eth/`. Per-service handler interfaces are local to that handler's package (not exported).
-- Handler tests fake the local interface, not the shared one. They never import the `gen/` packages.
-- Adding a new contract: drop the ABI JSON in `abi/`, add a `//go:generate` line in `generate.go`, write the wrapper, write the narrow interface. Run `make gen-contracts`.
+- Keep shared reader interfaces narrow at the source. If a shared reader is growing past what most consumers need, split it (e.g. `CTReader` vs `CTWriter`) rather than asking every consumer to declare a local subset.
+- Handler tests fake the shared interface. They never import the `gen/` packages.
+- Adding a new contract: drop the ABI JSON in `abi/`, add a `//go:generate` line in `generate.go`, write the wrapper, write the narrow shared interface. Run `make gen-contracts`.
 - Refreshing an ABI when upstream contracts change: rebuild `shisa-contracts` (`forge build`), copy the ABI JSON, run `make gen-contracts`. Never edit ABI JSON by hand.
 - `gen/` is regenerated by every developer's `make build`. Don't `git add` files under it.
 
