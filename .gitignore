@@ -22,6 +22,7 @@ Thumbs.db
 
 # Generated
 proto/gen/
+internal/shared/eth/gen/
 
 # Environment
 .env

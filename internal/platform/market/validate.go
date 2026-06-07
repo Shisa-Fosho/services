@@ -43,6 +43,10 @@ func ValidateMarket(market *Market) error {
 		return fmt.Errorf("slug is required: %w", ErrInvalidMarket)
 	}
 
+	if market.EventID == "" {
+		return fmt.Errorf("event_id is required: %w", ErrInvalidMarket)
+	}
+
 	if market.Question == "" {
 		return fmt.Errorf("question is required: %w", ErrInvalidMarket)
 	}
@@ -71,6 +75,67 @@ func ValidateMarket(market *Market) error {
 		return fmt.Errorf("condition ID is required: %w", ErrInvalidMarket)
 	}
 
+	if market.QuestionID == "" {
+		return fmt.Errorf("question ID is required: %w", ErrInvalidMarket)
+	}
+
+	if !market.TickSize.IsValid() {
+		return fmt.Errorf("invalid tick size %d: %w", market.TickSize, ErrInvalidMarket)
+	}
+
+	if market.MinSize <= 0 {
+		return fmt.Errorf("min_size must be positive, got %d: %w", market.MinSize, ErrInvalidMarket)
+	}
+
+	if market.MaxSize != nil && *market.MaxSize < market.MinSize {
+		return fmt.Errorf("max_size %d must be >= min_size %d: %w", *market.MaxSize, market.MinSize, ErrInvalidMarket)
+	}
+
+	return nil
+}
+
+// ValidateNegRiskCoherence enforces the event-type ↔ markets-set invariants
+// after an event and its markets have been constructed in memory.
+//
+//   - NEG_RISK ⇒ event.NegRiskMarketID != nil AND len(markets) >= 2.
+//   - BINARY   ⇒ event.NegRiskMarketID == nil AND len(markets) >= 1.
+//
+// QuestionID is required on every market regardless of event type (enforced
+// by ValidateMarket); this check is only about the event-level shape.
+func ValidateNegRiskCoherence(event *Event, markets []*Market) error {
+	switch event.EventType {
+	case EventTypeNegRisk:
+		if event.NegRiskMarketID == nil || *event.NegRiskMarketID == "" {
+			return fmt.Errorf("neg_risk_market_id is required for NEG_RISK events: %w", ErrInvalidEvent)
+		}
+		if len(markets) < 2 {
+			return fmt.Errorf("NEG_RISK events require >= 2 markets, got %d: %w", len(markets), ErrInvalidEvent)
+		}
+	case EventTypeBinary:
+		if event.NegRiskMarketID != nil {
+			return fmt.Errorf("neg_risk_market_id must be nil for BINARY events: %w", ErrInvalidEvent)
+		}
+		if len(markets) < 1 {
+			return fmt.Errorf("BINARY events require >= 1 market: %w", ErrInvalidEvent)
+		}
+	default:
+		return fmt.Errorf("invalid event type %d: %w", event.EventType, ErrInvalidEvent)
+	}
+	return nil
+}
+
+// ValidateTradingConfigUpdate checks a trading-config endpoint payload.
+// Returns ErrInvalidMarket on shape violations.
+func ValidateTradingConfigUpdate(tickSize TickSize, minSize int64, maxSize *int64) error {
+	if !tickSize.IsValid() {
+		return fmt.Errorf("invalid tick size %d: %w", tickSize, ErrInvalidMarket)
+	}
+	if minSize <= 0 {
+		return fmt.Errorf("min_size must be positive, got %d: %w", minSize, ErrInvalidMarket)
+	}
+	if maxSize != nil && *maxSize < minSize {
+		return fmt.Errorf("max_size %d must be >= min_size %d: %w", *maxSize, minSize, ErrInvalidMarket)
+	}
 	return nil
 }
 

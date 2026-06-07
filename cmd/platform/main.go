@@ -100,6 +100,29 @@ func run() error {
 		return fmt.Errorf("ensuring market-config KV bucket: %w", err)
 	}
 
+	// On-chain readers for the market lifecycle endpoints. Each
+	// contract has its own narrow reader from internal/shared/eth;
+	// the platform handler composes only the methods it needs via
+	// local interfaces. NEG_RISK_ADAPTER_ADDRESS may be the zero
+	// address on deploys without NegRisk — the reader returns
+	// eth.ErrNegRiskDisabled in that case.
+	rpcClient, err := eth.Dial(ctx, envutil.MustGet("POLYGON_RPC_URL"))
+	if err != nil {
+		return fmt.Errorf("connecting to chain: %w", err)
+	}
+	defer rpcClient.Close()
+
+	ctReader, err := eth.NewCTReader(rpcClient,
+		common.HexToAddress(envutil.MustGet("CONDITIONAL_TOKENS_ADDRESS")))
+	if err != nil {
+		return fmt.Errorf("binding ConditionalTokens: %w", err)
+	}
+	negRiskReader, err := eth.NewNegRiskReader(rpcClient,
+		common.HexToAddress(envutil.MustGet("NEG_RISK_ADAPTER_ADDRESS")))
+	if err != nil {
+		return fmt.Errorf("binding NegRiskAdapter: %w", err)
+	}
+
 	// Auth dependencies.
 	jwtCfg := platformauth.JWTConfig{
 		AccessSecret:  []byte(envutil.MustGet("JWT_ACCESS_SECRET")),
@@ -194,7 +217,7 @@ func run() error {
 	}
 	marketRepo := market.NewPGRepository(pool)
 	marketPublisher := market.NewPublisher(natsClient, marketConfigKV, logger)
-	marketHandler := market.NewHandler(marketRepo, marketPublisher, logger)
+	marketHandler := market.NewHandler(marketRepo, marketPublisher, ctReader, negRiskReader, logger)
 	marketHandler.RegisterAdminRoutes(mux, adminMiddleware)
 
 	// Middleware stack (outermost first):

@@ -87,13 +87,17 @@ func TestValidateEvent(t *testing.T) {
 func validMarket() *Market {
 	return &Market{
 		Slug:            "test-market",
+		EventID:         "550e8400-e29b-41d4-a716-446655440000",
 		Question:        "Will it happen?",
 		OutcomeYesLabel: "Yes",
 		OutcomeNoLabel:  "No",
 		TokenIDYes:      "token-yes-123",
 		TokenIDNo:       "token-no-456",
 		ConditionID:     "condition-789",
+		QuestionID:      "question-abc",
 		Status:          StatusActive,
+		TickSize:        TickSize0_01,
+		MinSize:         5,
 		PriceYes:        50,
 		PriceNo:         50,
 	}
@@ -153,10 +157,43 @@ func TestValidateMarket(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "with event ID is valid",
+			name:    "empty event id",
+			modify:  func(market *Market) { market.EventID = "" },
+			wantErr: true,
+		},
+		{
+			name:    "empty question id",
+			modify:  func(market *Market) { market.QuestionID = "" },
+			wantErr: true,
+		},
+		{
+			name:    "invalid tick size",
+			modify:  func(market *Market) { market.TickSize = TickSize(99) },
+			wantErr: true,
+		},
+		{
+			name:    "min size zero",
+			modify:  func(market *Market) { market.MinSize = 0 },
+			wantErr: true,
+		},
+		{
+			name:    "min size negative",
+			modify:  func(market *Market) { market.MinSize = -1 },
+			wantErr: true,
+		},
+		{
+			name: "max size below min size",
 			modify: func(market *Market) {
-				eventID := "550e8400-e29b-41d4-a716-446655440000"
-				market.EventID = &eventID
+				below := int64(1)
+				market.MaxSize = &below
+			},
+			wantErr: true,
+		},
+		{
+			name: "max size equal min size is valid",
+			modify: func(market *Market) {
+				equal := market.MinSize
+				market.MaxSize = &equal
 			},
 			wantErr: false,
 		},
@@ -168,6 +205,126 @@ func TestValidateMarket(t *testing.T) {
 			market := validMarket()
 			tt.modify(market)
 			err := ValidateMarket(market)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidMarket) {
+				t.Errorf("expected ErrInvalidMarket, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateNegRiskCoherence(t *testing.T) {
+	t.Parallel()
+
+	marketID := "0xabc"
+
+	mkMarkets := func(count int) []*Market {
+		out := make([]*Market, count)
+		for idx := range out {
+			out[idx] = validMarket()
+		}
+		return out
+	}
+
+	tests := []struct {
+		name    string
+		event   *Event
+		markets []*Market
+		wantErr bool
+	}{
+		{
+			name:    "binary with one market passes",
+			event:   &Event{EventType: EventTypeBinary},
+			markets: mkMarkets(1),
+			wantErr: false,
+		},
+		{
+			name:    "binary with multiple markets passes",
+			event:   &Event{EventType: EventTypeBinary},
+			markets: mkMarkets(3),
+			wantErr: false,
+		},
+		{
+			name:    "binary with zero markets fails",
+			event:   &Event{EventType: EventTypeBinary},
+			markets: mkMarkets(0),
+			wantErr: true,
+		},
+		{
+			name:    "binary with neg_risk_market_id fails",
+			event:   &Event{EventType: EventTypeBinary, NegRiskMarketID: &marketID},
+			markets: mkMarkets(1),
+			wantErr: true,
+		},
+		{
+			name:    "neg_risk with two markets passes",
+			event:   &Event{EventType: EventTypeNegRisk, NegRiskMarketID: &marketID},
+			markets: mkMarkets(2),
+			wantErr: false,
+		},
+		{
+			name:    "neg_risk with one market fails",
+			event:   &Event{EventType: EventTypeNegRisk, NegRiskMarketID: &marketID},
+			markets: mkMarkets(1),
+			wantErr: true,
+		},
+		{
+			name:    "neg_risk without neg_risk_market_id fails",
+			event:   &Event{EventType: EventTypeNegRisk},
+			markets: mkMarkets(2),
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateNegRiskCoherence(tt.event, tt.markets)
+			if tt.wantErr && err == nil {
+				t.Error("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && err != nil && !errors.Is(err, ErrInvalidEvent) {
+				t.Errorf("expected ErrInvalidEvent, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidateTradingConfigUpdate(t *testing.T) {
+	t.Parallel()
+
+	belowMin := int64(1)
+	atMin := int64(5)
+	aboveMin := int64(100)
+
+	tests := []struct {
+		name     string
+		tickSize TickSize
+		minSize  int64
+		maxSize  *int64
+		wantErr  bool
+	}{
+		{"valid no max", TickSize0_01, 5, nil, false},
+		{"valid with max equal min", TickSize0_001, 5, &atMin, false},
+		{"valid with max above min", TickSize0_1, 5, &aboveMin, false},
+		{"invalid tick size", TickSize(99), 5, nil, true},
+		{"zero min size", TickSize0_01, 0, nil, true},
+		{"negative min size", TickSize0_01, -1, nil, true},
+		{"max below min", TickSize0_01, 5, &belowMin, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateTradingConfigUpdate(tt.tickSize, tt.minSize, tt.maxSize)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}

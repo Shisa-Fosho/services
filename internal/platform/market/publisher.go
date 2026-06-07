@@ -12,8 +12,8 @@ import (
 )
 
 // ConfigBucket is the JetStream KV bucket name carrying per-market config
-// (status, token IDs, fee rate) for the trading service to consume into
-// its in-memory order-book cache.
+// (status, token IDs, fee rate, trading parameters) for the trading service
+// to consume into its in-memory order-book cache.
 const ConfigBucket = "market-config"
 
 // statusSubjectPrefix is the prefix for ephemeral status-change publishes
@@ -21,15 +21,17 @@ const ConfigBucket = "market-config"
 const statusSubjectPrefix = "platform.market."
 
 // ConfigEntry is the JSON payload written to the `market-config` KV bucket,
-// keyed by market ID. FeeRateBps is a pointer so a nil value (no per-market
-// override) is distinguishable from an explicit 0 bps — consumers apply the
-// platform default in the nil case.
+// keyed by market ID. Pointer fields are omitted from JSON when nil so
+// consumers can distinguish "no per-market override" from "explicit zero".
 type ConfigEntry struct {
 	MarketID   string `json:"market_id"`
 	Status     string `json:"status"`
 	TokenIDYes string `json:"token_id_yes"`
 	TokenIDNo  string `json:"token_id_no"`
 	FeeRateBps *int64 `json:"fee_rate_bps,omitempty"`
+	TickSize   string `json:"tick_size"`
+	MinSize    int64  `json:"min_size"`
+	MaxSize    *int64 `json:"max_size,omitempty"`
 }
 
 func toConfigEntry(market *Market) ConfigEntry {
@@ -39,16 +41,21 @@ func toConfigEntry(market *Market) ConfigEntry {
 		TokenIDYes: market.TokenIDYes,
 		TokenIDNo:  market.TokenIDNo,
 		FeeRateBps: market.FeeRateBps,
+		TickSize:   market.TickSize.String(),
+		MinSize:    market.MinSize,
+		MaxSize:    market.MaxSize,
 	}
 }
 
 // statusChangePayload is the body pushed onto platform.market.{id} for
 // ephemeral fan-out by the WebSocket server. Status changes are not
-// durably stored — clients receive only the current status; the KV
-// bucket is the durable source of truth.
+// durably stored — clients receive only the current status (and outcome
+// when the market reached a resolved-with-outcome state); the KV bucket
+// is the durable source of truth.
 type statusChangePayload struct {
-	MarketID string `json:"market_id"`
-	Status   string `json:"status"`
+	MarketID string  `json:"market_id"`
+	Status   string  `json:"status"`
+	Outcome  *string `json:"outcome,omitempty"`
 }
 
 // Publisher writes market-config updates to the `market-config` JetStream
@@ -92,17 +99,30 @@ func (publisher *Publisher) PublishMarketConfig(market *Market) error {
 }
 
 // PublishStatusChange publishes the new status on platform.market.{id}
-// for ephemeral WebSocket fan-out. Core NATS — no durability — but
-// errors are surfaced so callers can retry.
+// for ephemeral WebSocket fan-out. Forwards to PublishStatusChangeWithOutcome
+// with a nil outcome — convenience wrapper for non-resolve/void transitions.
 func (publisher *Publisher) PublishStatusChange(ctx context.Context, marketID string, status Status) error {
+	return publisher.PublishStatusChangeWithOutcome(ctx, marketID, status, nil)
+}
+
+// PublishStatusChangeWithOutcome publishes a status change, optionally
+// carrying the final outcome (used on resolve so WebSocket clients see
+// YES / NO without re-fetching). Core NATS — no durability — but errors
+// are surfaced so callers can retry.
+func (publisher *Publisher) PublishStatusChangeWithOutcome(ctx context.Context, marketID string, status Status, outcome *Outcome) error {
 	if marketID == "" {
 		return fmt.Errorf("publishing status-change: market_id is required")
 	}
 	subject := statusSubjectPrefix + marketID
-	data, err := json.Marshal(statusChangePayload{
+	payload := statusChangePayload{
 		MarketID: marketID,
 		Status:   status.String(),
-	})
+	}
+	if outcome != nil {
+		out := outcome.String()
+		payload.Outcome = &out
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshaling status-change for %s: %w", marketID, err)
 	}
