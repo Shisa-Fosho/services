@@ -16,6 +16,10 @@ var (
 	ErrInvalidTransition = errors.New("invalid status transition")
 	ErrDuplicateSlug     = errors.New("duplicate slug")
 	ErrInvalidFeeRate    = errors.New("invalid fee rate")
+	// ErrOnChainMismatch is returned when on-chain state contradicts an
+	// admin-declared outcome (e.g. admin says YES but payoutNumerators
+	// show [0,1]). Handlers map it to 422.
+	ErrOnChainMismatch = errors.New("on-chain state mismatch")
 )
 
 // Fee-rate bounds (basis points). MaxFeeBps matches the hard-coded on-chain
@@ -26,21 +30,24 @@ const (
 	MaxFeeBps = 1000 // 10%
 )
 
-// EventType represents the structure of an event (binary or multi-outcome).
+// EventType represents the on-chain settlement mechanics for an event.
+// BINARY markets settle directly against ConditionalTokens. NEG_RISK markets
+// settle via the NegRiskAdapter with mutual-exclusivity semantics — at most
+// one constituent binary question may resolve YES.
 type EventType int8
 
 // EventType values.
 const (
-	EventTypeBinary       EventType = 0
-	EventTypeMultiOutcome EventType = 1
+	EventTypeBinary  EventType = 0
+	EventTypeNegRisk EventType = 1
 )
 
 func (eventType EventType) String() string {
 	switch eventType {
 	case EventTypeBinary:
 		return "BINARY"
-	case EventTypeMultiOutcome:
-		return "MULTI_OUTCOME"
+	case EventTypeNegRisk:
+		return "NEG_RISK"
 	default:
 		return "UNKNOWN"
 	}
@@ -48,7 +55,20 @@ func (eventType EventType) String() string {
 
 // IsValid returns true if the event type is a known value.
 func (eventType EventType) IsValid() bool {
-	return eventType == EventTypeBinary || eventType == EventTypeMultiOutcome
+	return eventType == EventTypeBinary || eventType == EventTypeNegRisk
+}
+
+// ParseEventType decodes the SDK string ("BINARY" | "NEG_RISK") to the
+// corresponding enum value. Returns false if the string is unrecognized.
+func ParseEventType(value string) (EventType, bool) {
+	switch value {
+	case "BINARY":
+		return EventTypeBinary, true
+	case "NEG_RISK":
+		return EventTypeNegRisk, true
+	default:
+		return 0, false
+	}
 }
 
 // Status represents the lifecycle state of an event or market.
@@ -82,6 +102,12 @@ func (status Status) IsValid() bool {
 	return status >= StatusActive && status <= StatusVoided
 }
 
+// IsTerminal returns true if the status is one of the terminal states
+// (Resolved or Voided) — meaning no further transitions are allowed.
+func (status Status) IsTerminal() bool {
+	return status == StatusResolved || status == StatusVoided
+}
+
 // Outcome represents the resolved outcome of a market.
 type Outcome int8
 
@@ -105,6 +131,73 @@ func (outcome Outcome) String() string {
 // IsValid returns true if the outcome is a known value.
 func (outcome Outcome) IsValid() bool {
 	return outcome == OutcomeYes || outcome == OutcomeNo
+}
+
+// ParseOutcome decodes the SDK string ("YES" | "NO") to the corresponding
+// enum value. Returns false if the string is unrecognized.
+func ParseOutcome(value string) (Outcome, bool) {
+	switch value {
+	case "YES":
+		return OutcomeYes, true
+	case "NO":
+		return OutcomeNo, true
+	default:
+		return 0, false
+	}
+}
+
+// TickSize represents the minimum price increment for a market, encoded as
+// an enum index matching the Polymarket clob-client v5.8.2 SDK strings.
+type TickSize int8
+
+// TickSize values. The index maps to a Polymarket SDK string:
+//
+//	0 -> "0.1"
+//	1 -> "0.01"   (default — most common market shape)
+//	2 -> "0.001"
+//	3 -> "0.0001"
+const (
+	TickSize0_1    TickSize = 0
+	TickSize0_01   TickSize = 1
+	TickSize0_001  TickSize = 2
+	TickSize0_0001 TickSize = 3
+)
+
+func (tickSize TickSize) String() string {
+	switch tickSize {
+	case TickSize0_1:
+		return "0.1"
+	case TickSize0_01:
+		return "0.01"
+	case TickSize0_001:
+		return "0.001"
+	case TickSize0_0001:
+		return "0.0001"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// IsValid returns true if the tick size is a known value.
+func (tickSize TickSize) IsValid() bool {
+	return tickSize >= TickSize0_1 && tickSize <= TickSize0_0001
+}
+
+// ParseTickSize decodes the SDK string to the corresponding enum value.
+// Returns false if the string is unrecognized.
+func ParseTickSize(value string) (TickSize, bool) {
+	switch value {
+	case "0.1":
+		return TickSize0_1, true
+	case "0.01":
+		return TickSize0_01, true
+	case "0.001":
+		return TickSize0_001, true
+	case "0.0001":
+		return TickSize0_0001, true
+	default:
+		return 0, false
+	}
 }
 
 // ValidTransition returns true if moving from one Status to another
@@ -144,6 +237,11 @@ type Category struct {
 // Event represents a top-level prediction event that may contain one or more
 // markets. For example, "2024 US Presidential Election" with markets for each
 // candidate.
+//
+// NegRiskMarketID is the adapter-level marketId emitted by
+// NegRiskAdapter.prepareMarket. It groups multiple binary questions under
+// one mutually-exclusive umbrella. NOT to be confused with our DB UUID
+// (Event.ID) — see docs/plans/p2.4-event-market-lifecycle.md.
 type Event struct {
 	ID                string          `db:"id"`   // UUID, generated by database.
 	Slug              string          `db:"slug"` // URL-friendly unique identifier.
@@ -156,6 +254,7 @@ type Event struct {
 	EndDate           time.Time       `db:"end_date"`
 	Featured          bool            `db:"featured"`
 	FeaturedSortOrder int16           `db:"featured_sort_order"`
+	NegRiskMarketID   *string         `db:"neg_risk_market_id"` // adapter marketId; set only when event_type = NEG_RISK.
 	CreatedAt         time.Time       `db:"created_at"`
 	UpdatedAt         time.Time       `db:"updated_at"`
 }
@@ -186,19 +285,20 @@ type MarketUpdate struct {
 	OutcomeNoLabel  *string
 }
 
-// Market represents a single binary YES/NO prediction market.
-// A market may belong to an event (multi-outcome) or be standalone (event_id null).
-// All monetary amounts are in integer cents (1 = $0.01).
+// Market represents a single binary YES/NO prediction market. Every market
+// belongs to an event (FK to events.id). All monetary amounts are in
+// integer cents (1 = $0.01).
 type Market struct {
 	ID              string    `db:"id"`                // UUID, generated by database.
 	Slug            string    `db:"slug"`              // URL-friendly unique identifier.
-	EventID         *string   `db:"event_id"`          // Nullable FK to events; null for standalone markets.
+	EventID         string    `db:"event_id"`          // FK to events; every market belongs to an event.
 	Question        string    `db:"question"`          // The prediction question.
 	OutcomeYesLabel string    `db:"outcome_yes_label"` // Display label for YES outcome (default "Yes").
 	OutcomeNoLabel  string    `db:"outcome_no_label"`  // Display label for NO outcome (default "No").
 	TokenIDYes      string    `db:"token_id_yes"`      // Conditional token ID for YES outcome.
 	TokenIDNo       string    `db:"token_id_no"`       // Conditional token ID for NO outcome.
-	ConditionID     string    `db:"condition_id"`      // CTF condition ID.
+	ConditionID     string    `db:"condition_id"`      // CT condition ID. For NEG_RISK derived server-side from QuestionID.
+	QuestionID      string    `db:"question_id"`       // On-chain questionId; required for the admin to call reportPayouts.
 	Status          Status    `db:"status"`
 	Outcome         *Outcome  `db:"outcome"`       // Null until resolved.
 	PriceYes        int64     `db:"price_yes"`     // Current YES price in cents (1-99).
@@ -206,6 +306,9 @@ type Market struct {
 	Volume          int64     `db:"volume"`        // Total traded volume in cents.
 	OpenInterest    int64     `db:"open_interest"` // Current open interest in cents.
 	FeeRateBps      *int64    `db:"fee_rate_bps"`  // Nullable; nil means "use platform default" (0 bps).
+	TickSize        TickSize  `db:"tick_size"`     // Polymarket SDK tick-size enum.
+	MinSize         int64     `db:"min_size"`      // Minimum order size in cents.
+	MaxSize         *int64    `db:"max_size"`      // Optional max order size; nil = unlimited.
 	CreatedAt       time.Time `db:"created_at"`
 	UpdatedAt       time.Time `db:"updated_at"`
 }

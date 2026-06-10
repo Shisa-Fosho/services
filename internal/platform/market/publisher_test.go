@@ -2,18 +2,23 @@ package market
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
 func TestToConfigEntry_AllFieldsCopied(t *testing.T) {
 	t.Parallel()
 	feeRate := int64(50)
+	maxSize := int64(1000)
 	market := &Market{
 		ID:         "mkt-1",
 		Status:     StatusPaused,
 		TokenIDYes: "token-yes",
 		TokenIDNo:  "token-no",
 		FeeRateBps: &feeRate,
+		TickSize:   TickSize0_001,
+		MinSize:    10,
+		MaxSize:    &maxSize,
 	}
 
 	entry := toConfigEntry(market)
@@ -32,6 +37,15 @@ func TestToConfigEntry_AllFieldsCopied(t *testing.T) {
 	}
 	if entry.FeeRateBps == nil || *entry.FeeRateBps != feeRate {
 		t.Errorf("FeeRateBps = %v, want pointer to %d", entry.FeeRateBps, feeRate)
+	}
+	if entry.TickSize != "0.001" {
+		t.Errorf("TickSize = %q, want \"0.001\"", entry.TickSize)
+	}
+	if entry.MinSize != 10 {
+		t.Errorf("MinSize = %d, want 10", entry.MinSize)
+	}
+	if entry.MaxSize == nil || *entry.MaxSize != maxSize {
+		t.Errorf("MaxSize = %v, want pointer to %d", entry.MaxSize, maxSize)
 	}
 }
 
@@ -109,5 +123,140 @@ func TestConfigEntry_JSONShape_FeeRateIncludedWhenSet(t *testing.T) {
 	}
 	if num, _ := raw.(float64); num != 75 {
 		t.Errorf("fee_rate_bps = %v, want 75", raw)
+	}
+}
+
+func TestConfigEntry_JSONShape_TickSizeIsSDKString(t *testing.T) {
+	t.Parallel()
+	market := &Market{
+		ID:         "abc",
+		Status:     StatusActive,
+		TokenIDYes: "y",
+		TokenIDNo:  "n",
+		TickSize:   TickSize0_01,
+		MinSize:    5,
+	}
+	data, err := json.Marshal(toConfigEntry(market))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["tick_size"] != "0.01" {
+		t.Errorf("tick_size = %v, want \"0.01\" (SDK string, not integer)", got["tick_size"])
+	}
+	if num, _ := got["min_size"].(float64); num != 5 {
+		t.Errorf("min_size = %v, want 5", got["min_size"])
+	}
+}
+
+func TestConfigEntry_JSONShape_MaxSizeOmittedWhenNil(t *testing.T) {
+	t.Parallel()
+	market := &Market{
+		ID:         "abc",
+		Status:     StatusActive,
+		TokenIDYes: "y",
+		TokenIDNo:  "n",
+		TickSize:   TickSize0_01,
+		MinSize:    5,
+		MaxSize:    nil,
+	}
+	data, err := json.Marshal(toConfigEntry(market))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, present := got["max_size"]; present {
+		t.Errorf("max_size should be omitted when nil")
+	}
+}
+
+func TestStatusChangePayload_OutcomeOmittedWhenNil(t *testing.T) {
+	t.Parallel()
+	payload := statusChangePayload{
+		MarketID: "abc",
+		Status:   "ACTIVE",
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, present := got["outcome"]; present {
+		t.Errorf("outcome should be omitted when nil")
+	}
+}
+
+func TestStatusChangePayload_OutcomeIncludedWhenSet(t *testing.T) {
+	t.Parallel()
+	yes := "YES"
+	payload := statusChangePayload{
+		MarketID: "abc",
+		Status:   "RESOLVED",
+		Outcome:  &yes,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["outcome"] != "YES" {
+		t.Errorf("outcome = %v, want \"YES\"", got["outcome"])
+	}
+}
+
+func TestRetryOperation_SucceedsAfterTransientFailures(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	err := retryOperation(3, 0, func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("transient")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected success on third attempt, got: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestRetryOperation_GivesUpAfterAttempts(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	wantErr := errors.New("persistent")
+	err := retryOperation(3, 0, func() error {
+		calls++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the last error, got: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestRetryOperation_NoRetryOnImmediateSuccess(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	if err := retryOperation(3, 0, func() error { calls++; return nil }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
 	}
 }

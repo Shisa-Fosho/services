@@ -11,7 +11,7 @@ func TestEventType_String(t *testing.T) {
 		want string
 	}{
 		{"binary", EventTypeBinary, "BINARY"},
-		{"multi_outcome", EventTypeMultiOutcome, "MULTI_OUTCOME"},
+		{"neg_risk", EventTypeNegRisk, "NEG_RISK"},
 		{"unknown", EventType(99), "UNKNOWN"},
 	}
 
@@ -34,7 +34,7 @@ func TestEventType_IsValid(t *testing.T) {
 		want bool
 	}{
 		{"binary", EventTypeBinary, true},
-		{"multi_outcome", EventTypeMultiOutcome, true},
+		{"neg_risk", EventTypeNegRisk, true},
 		{"negative", EventType(-1), false},
 		{"out_of_range", EventType(5), false},
 	}
@@ -142,6 +142,135 @@ func TestOutcome_IsValid(t *testing.T) {
 			t.Parallel()
 			if got := tt.outcome.IsValid(); got != tt.want {
 				t.Errorf("Outcome(%d).IsValid() = %v, want %v", tt.outcome, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseEventType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  string
+		want   EventType
+		wantOK bool
+	}{
+		{"binary", "BINARY", EventTypeBinary, true},
+		{"neg_risk", "NEG_RISK", EventTypeNegRisk, true},
+		{"empty", "", 0, false},
+		{"unknown", "MULTI_OUTCOME", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, gotOK := ParseEventType(tt.value)
+			if got != tt.want || gotOK != tt.wantOK {
+				t.Errorf("ParseEventType(%q) = (%d, %v), want (%d, %v)", tt.value, got, gotOK, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestParseOutcome(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  string
+		want   Outcome
+		wantOK bool
+	}{
+		{"yes", "YES", OutcomeYes, true},
+		{"no", "NO", OutcomeNo, true},
+		{"empty", "", 0, false},
+		{"unknown", "MAYBE", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, gotOK := ParseOutcome(tt.value)
+			if got != tt.want || gotOK != tt.wantOK {
+				t.Errorf("ParseOutcome(%q) = (%d, %v), want (%d, %v)", tt.value, got, gotOK, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestTickSize_String(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ts   TickSize
+		want string
+	}{
+		{"0.1", TickSize0_1, "0.1"},
+		{"0.01", TickSize0_01, "0.01"},
+		{"0.001", TickSize0_001, "0.001"},
+		{"0.0001", TickSize0_0001, "0.0001"},
+		{"unknown", TickSize(99), "UNKNOWN"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.ts.String(); got != tt.want {
+				t.Errorf("TickSize(%d).String() = %q, want %q", tt.ts, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTickSize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		value  string
+		want   TickSize
+		wantOK bool
+	}{
+		{"0.1", "0.1", TickSize0_1, true},
+		{"0.01", "0.01", TickSize0_01, true},
+		{"0.001", "0.001", TickSize0_001, true},
+		{"0.0001", "0.0001", TickSize0_0001, true},
+		{"empty", "", 0, false},
+		{"unknown", "0.5", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, gotOK := ParseTickSize(tt.value)
+			if got != tt.want || gotOK != tt.wantOK {
+				t.Errorf("ParseTickSize(%q) = (%d, %v), want (%d, %v)", tt.value, got, gotOK, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestStatus_IsTerminal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status Status
+		want   bool
+	}{
+		{"active", StatusActive, false},
+		{"paused", StatusPaused, false},
+		{"resolved", StatusResolved, true},
+		{"voided", StatusVoided, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.status.IsTerminal(); got != tt.want {
+				t.Errorf("Status(%s).IsTerminal() = %v, want %v", tt.status, got, tt.want)
 			}
 		})
 	}
