@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -133,19 +134,9 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 		return "", false
 	}
 
-	// Decrypt HMAC secret and verify signature. The stored secret is URL-safe
-	// base64 (matching the clob-client contract); decode it to raw bytes to
-	// use as the HMAC-SHA256 key.
-	secret, err := DecryptSecret(encryptionKey, stored.HMACSecretEncrypted)
+	secretBytes, err := decryptHMACKey(encryptionKey, stored.HMACSecretEncrypted)
 	if err != nil {
-		logger.Error("decrypting hmac secret", zap.Error(err))
-		fail()
-		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
-		return "", false
-	}
-	secretBytes, err := base64.URLEncoding.DecodeString(secret)
-	if err != nil {
-		logger.Error("decoding hmac secret", zap.Error(err))
+		logger.Error("recovering hmac key", zap.Error(err))
 		fail()
 		httputil.ErrorResponse(w, http.StatusUnauthorized, "invalid api key")
 		return "", false
@@ -165,6 +156,21 @@ func authenticateAPIKey(w http.ResponseWriter, r *http.Request, apiKey string, r
 	}
 
 	return stored.UserAddress, true
+}
+
+// decryptHMACKey recovers the raw HMAC-SHA256 key from a stored encrypted
+// secret. The stored secret is URL-safe base64 (matching the clob-client
+// contract); decode it to raw bytes to use as the HMAC-SHA256 key.
+func decryptHMACKey(encryptionKey []byte, encryptedSecret string) ([]byte, error) {
+	secret, err := DecryptSecret(encryptionKey, encryptedSecret)
+	if err != nil {
+		return nil, fmt.Errorf("decrypting hmac secret: %w", err)
+	}
+	secretBytes, err := base64.URLEncoding.DecodeString(secret)
+	if err != nil {
+		return nil, fmt.Errorf("decoding hmac secret: %w", err)
+	}
+	return secretBytes, nil
 }
 
 // BuildHMACMessage constructs the signing payload: timestamp + method + path + body.
