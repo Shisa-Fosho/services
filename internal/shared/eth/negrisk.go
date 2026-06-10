@@ -13,8 +13,7 @@ import (
 
 // NegRiskReader is the narrow read surface over Polymarket's
 // NegRiskAdapter contract. Per the pattern in conditionaltokens.go,
-// service handlers depend on a local interface that is a subset of
-// this one.
+// service handlers depend on this shared interface directly.
 type NegRiskReader interface {
 	// ConditionID returns the deterministic CT conditionId the
 	// adapter would derive for the given questionId. The caller

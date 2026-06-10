@@ -3,7 +3,9 @@ package market
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"go.uber.org/zap"
@@ -58,14 +60,40 @@ type statusChangePayload struct {
 	Outcome  *string `json:"outcome,omitempty"`
 }
 
+// publishAttempts and publishRetryDelay bound the in-request retry on
+// publish failures. Both publish operations are idempotent (KV put is
+// last-write-wins; the status broadcast is safe to repeat), so retrying
+// a transient NATS blip here spares the admin a manual retry. A failure
+// that survives all attempts still bubbles up as a 502.
+const (
+	publishAttempts   = 3
+	publishRetryDelay = 100 * time.Millisecond
+)
+
+// retryOperation runs operation up to attempts times, sleeping delay
+// between tries. Returns nil on the first success, or the last error.
+func retryOperation(attempts int, delay time.Duration, operation func() error) error {
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(delay)
+		}
+		if err = operation(); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
 // Publisher writes market-config updates to the `market-config` JetStream
 // KV bucket and publishes status-change events on Core NATS for ephemeral
-// WebSocket fan-out.
+// WebSocket fan-out. It also exposes the read side of the same bucket
+// (LiveStatus) so admin reads can report the state trading actually sees.
 //
-// All callers commit to the database first, then publish. The Publisher
-// has no idempotency or retry logic of its own — KV puts are inherently
-// idempotent (last write wins, keyed by market ID), and Core NATS publish
-// failures bubble up to the caller for retry.
+// All callers commit to the database first, then publish. Both publish
+// methods retry transient failures in-request (see publishAttempts);
+// errors that survive the retries bubble up to the caller, whose own
+// retry is safe because the repository transitions are idempotent.
 type Publisher struct {
 	natsClient *sharednats.Client
 	kv         nats.KeyValue
@@ -92,10 +120,33 @@ func (publisher *Publisher) PublishMarketConfig(market *Market) error {
 	if err != nil {
 		return fmt.Errorf("marshaling market-config for %s: %w", market.ID, err)
 	}
-	if _, err := publisher.kv.Put(market.ID, data); err != nil {
+	err = retryOperation(publishAttempts, publishRetryDelay, func() error {
+		_, putErr := publisher.kv.Put(market.ID, data)
+		return putErr
+	})
+	if err != nil {
 		return fmt.Errorf("publishing market-config for %s: %w", market.ID, err)
 	}
 	return nil
+}
+
+// LiveStatus reads the market's entry from the `market-config` KV bucket
+// and returns its status string — the state the trading service actually
+// operates on. Returns ok=false (and no error) when the market has no
+// entry, i.e. its config has never been successfully published.
+func (publisher *Publisher) LiveStatus(marketID string) (string, bool, error) {
+	entry, err := publisher.kv.Get(marketID)
+	if err != nil {
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("reading market-config for %s: %w", marketID, err)
+	}
+	var config ConfigEntry
+	if err := json.Unmarshal(entry.Value(), &config); err != nil {
+		return "", false, fmt.Errorf("decoding market-config for %s: %w", marketID, err)
+	}
+	return config.Status, true, nil
 }
 
 // PublishStatusChange publishes the new status on platform.market.{id}
@@ -126,7 +177,10 @@ func (publisher *Publisher) PublishStatusChangeWithOutcome(ctx context.Context, 
 	if err != nil {
 		return fmt.Errorf("marshaling status-change for %s: %w", marketID, err)
 	}
-	if err := publisher.natsClient.Publish(ctx, subject, data); err != nil {
+	err = retryOperation(publishAttempts, publishRetryDelay, func() error {
+		return publisher.natsClient.Publish(ctx, subject, data)
+	})
+	if err != nil {
 		return fmt.Errorf("publishing status-change for %s: %w", marketID, err)
 	}
 	return nil

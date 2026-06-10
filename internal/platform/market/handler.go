@@ -10,12 +10,14 @@ import (
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 
-// configPublisher is the publishing surface the handler depends on. The
-// concrete *Publisher in this package satisfies it; tests inject stubs.
-type configPublisher interface {
+// configStore is the market-config bucket surface the handler depends on:
+// publishes for writes, LiveStatus for the read overlay on admin GETs.
+// The concrete *Publisher in this package satisfies it; tests inject stubs.
+type configStore interface {
 	PublishMarketConfig(market *Market) error
 	PublishStatusChange(ctx context.Context, marketID string, status Status) error
 	PublishStatusChangeWithOutcome(ctx context.Context, marketID string, status Status, outcome *Outcome) error
+	LiveStatus(marketID string) (string, bool, error)
 }
 
 // Handler implements the platform service's market-domain HTTP endpoints.
@@ -25,7 +27,7 @@ type configPublisher interface {
 // table, and the cross-resource error helpers.
 type Handler struct {
 	repo      Repository
-	publisher configPublisher
+	publisher configStore
 	ct        eth.CTReader
 	negRisk   eth.NegRiskReader
 	logger    *zap.Logger
@@ -37,7 +39,7 @@ type Handler struct {
 // perform verification on create / resolve / void; they are separate
 // interfaces because each contract is independently versioned and
 // independently deployable (NegRisk is optional).
-func NewHandler(repo Repository, publisher configPublisher, ct eth.CTReader, negRisk eth.NegRiskReader, logger *zap.Logger) *Handler {
+func NewHandler(repo Repository, publisher configStore, ct eth.CTReader, negRisk eth.NegRiskReader, logger *zap.Logger) *Handler {
 	return &Handler{repo: repo, publisher: publisher, ct: ct, negRisk: negRisk, logger: logger}
 }
 

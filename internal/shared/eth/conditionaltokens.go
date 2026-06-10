@@ -13,9 +13,11 @@ import (
 )
 
 // CTReader is the narrow read surface over the Gnosis ConditionalTokens
-// contract. Service handlers depend on a local interface that is a
-// subset of this one — pick only what you need per consumer. The
-// concrete *CTReaderClient below is the production implementation.
+// contract. Service handlers depend on this shared interface directly;
+// only declare a local subset when a consumer genuinely uses a strict
+// subset of these methods (see docs/rules/conventions.md, "On-chain
+// Contract Bindings"). The concrete *CTReaderClient below is the
+// production implementation.
 type CTReader interface {
 	// OutcomeSlotCount returns the prepared outcome count for a
 	// conditionId. Zero means "never prepared".

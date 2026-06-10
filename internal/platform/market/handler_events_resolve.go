@@ -16,7 +16,6 @@ import (
 
 // resolveEventRequest is the body for both resolve endpoints.
 type resolveEventRequest struct {
-	TxHash   string            `json:"tx_hash,omitempty"`
 	Outcomes map[string]string `json:"outcomes"`
 }
 
@@ -36,42 +35,8 @@ func (handler *Handler) resolveBinaryEvent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	siblingByID := indexByID(siblings)
-	for marketID, declared := range parsedOutcomes {
-		market, ok := siblingByID[marketID]
-		if !ok {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("market %s does not belong to event %s", marketID, eventID))
-			return
-		}
-		cid := common.HexToHash(market.ConditionID)
-		denom, err := handler.ct.PayoutDenominator(r.Context(), cid)
-		if err != nil {
-			handler.chainError(w, fmt.Sprintf("reading payoutDenominator for %s", marketID), err)
-			return
-		}
-		if denom == nil || denom.Sign() == 0 {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("market %s: %s", marketID, eth.ErrPayoutsNotReported.Error()))
-			return
-		}
-		nums, err := handler.ct.PayoutNumerators(r.Context(), cid, 2)
-		if err != nil {
-			handler.chainError(w, fmt.Sprintf("reading payoutNumerators for %s", marketID), err)
-			return
-		}
-		if len(nums) != 2 || nums[0] == nil || nums[1] == nil {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("market %s: unexpected on-chain numerator shape", marketID))
-			return
-		}
-		if !matchesDeclaredOutcome(nums[0], nums[1], declared) {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("market %s: declared %s but on-chain numerators are [%s,%s]: %s",
-					marketID, declared.String(), nums[0].String(), nums[1].String(),
-					ErrOnChainMismatch.Error()))
-			return
-		}
+	if !handler.verifyResolveChainState(r.Context(), w, eventID, parsedOutcomes, indexByID(siblings), nil) {
+		return
 	}
 
 	handler.commitAndPublishResolve(r.Context(), w, eventID, parsedOutcomes)
@@ -93,57 +58,77 @@ func (handler *Handler) resolveNegRiskEvent(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	siblingByID := indexByID(siblings)
+	// Friendlier error for the NegRisk dead end: if the parent market is
+	// already determined, the admin is declaring a second YES on a
+	// question whose payouts can never be reported.
+	unreportedHint := func(ctx context.Context) (string, bool) {
+		if event.NegRiskMarketID == nil {
+			return "", false
+		}
+		negID := common.HexToHash(*event.NegRiskMarketID)
+		determined, err := handler.negRisk.MarketDetermined(ctx, negID)
+		if err != nil || !determined {
+			return "", false
+		}
+		return "another market in this NegRisk event already resolved YES; this question can never be reported", true
+	}
+
+	if !handler.verifyResolveChainState(r.Context(), w, eventID, parsedOutcomes, indexByID(siblings), unreportedHint) {
+		return
+	}
+
+	handler.commitAndPublishResolve(r.Context(), w, eventID, parsedOutcomes)
+}
+
+// verifyResolveChainState confirms each declared outcome against the
+// reported on-chain payouts for that market's condition. unreportedHint,
+// when non-nil, is consulted when payouts are missing to produce a more
+// specific error message than the generic "payouts not reported".
+// Writes the response and returns false on any failure.
+func (handler *Handler) verifyResolveChainState(ctx context.Context, w http.ResponseWriter, eventID string, parsedOutcomes map[string]Outcome, siblingByID map[string]*Market, unreportedHint func(ctx context.Context) (string, bool)) bool {
 	for marketID, declared := range parsedOutcomes {
 		market, ok := siblingByID[marketID]
 		if !ok {
 			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
 				fmt.Sprintf("market %s does not belong to event %s", marketID, eventID))
-			return
+			return false
 		}
 		cid := common.HexToHash(market.ConditionID)
-		denom, err := handler.ct.PayoutDenominator(r.Context(), cid)
+		denom, err := handler.ct.PayoutDenominator(ctx, cid)
 		if err != nil {
 			handler.chainError(w, fmt.Sprintf("reading payoutDenominator for %s", marketID), err)
-			return
+			return false
 		}
 		if denom == nil || denom.Sign() == 0 {
-			// Friendlier error: if the parent NegRisk market is already
-			// determined, the admin is trying to declare a second YES on
-			// a question that can never have its payouts reported.
-			if event.NegRiskMarketID != nil {
-				negID := common.HexToHash(*event.NegRiskMarketID)
-				determined, dErr := handler.negRisk.MarketDetermined(r.Context(), negID)
-				if dErr == nil && determined {
-					httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-						"another market in this NegRisk event already resolved YES; this question can never be reported")
-					return
+			if unreportedHint != nil {
+				if message, hinted := unreportedHint(ctx); hinted {
+					httputil.ErrorResponse(w, http.StatusUnprocessableEntity, message)
+					return false
 				}
 			}
 			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
 				fmt.Sprintf("market %s: %s", marketID, eth.ErrPayoutsNotReported.Error()))
-			return
+			return false
 		}
-		nums, err := handler.ct.PayoutNumerators(r.Context(), cid, 2)
+		nums, err := handler.ct.PayoutNumerators(ctx, cid, 2)
 		if err != nil {
 			handler.chainError(w, fmt.Sprintf("reading payoutNumerators for %s", marketID), err)
-			return
+			return false
 		}
 		if len(nums) != 2 || nums[0] == nil || nums[1] == nil {
 			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
 				fmt.Sprintf("market %s: unexpected on-chain numerator shape", marketID))
-			return
+			return false
 		}
 		if !matchesDeclaredOutcome(nums[0], nums[1], declared) {
 			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
 				fmt.Sprintf("market %s: declared %s but on-chain numerators are [%s,%s]: %s",
 					marketID, declared.String(), nums[0].String(), nums[1].String(),
 					ErrOnChainMismatch.Error()))
-			return
+			return false
 		}
 	}
-
-	handler.commitAndPublishResolve(r.Context(), w, eventID, parsedOutcomes)
+	return true
 }
 
 func decodeResolveRequest(w http.ResponseWriter, r *http.Request) (string, resolveEventRequest, bool) {

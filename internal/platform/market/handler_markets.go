@@ -71,6 +71,17 @@ func toMarketResponse(market *Market) marketResponse {
 	return out
 }
 
+// liveStatusUnpublished is the status shown for a market whose config has
+// never reached the market-config KV bucket (e.g. the publish after create
+// failed). It is a read-model value only — never stored.
+const liveStatusUnpublished = "UNPUBLISHED"
+
+// getMarket serves the market record from the database, but overlays the
+// status field with the market-config KV entry — the state the trading
+// service actually operates on. After a write whose KV publish failed,
+// this shows the pre-write status (or UNPUBLISHED), signalling the admin
+// to repeat the write; repository transitions are idempotent so the
+// retry republishes.
 func (handler *Handler) getMarket(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -86,7 +97,22 @@ func (handler *Handler) getMarket(w http.ResponseWriter, r *http.Request) {
 		handler.internalError(w, "loading market", err)
 		return
 	}
-	_ = httputil.EncodeJSON(w, http.StatusOK, toMarketResponse(market))
+
+	liveStatus, published, err := handler.publisher.LiveStatus(id)
+	if err != nil {
+		handler.logger.Error("reading live market config failed",
+			zap.String("market_id", id), zap.Error(err))
+		httputil.ErrorResponse(w, http.StatusBadGateway,
+			"reading live market config failed; please retry")
+		return
+	}
+	resp := toMarketResponse(market)
+	if published {
+		resp.Status = liveStatus
+	} else {
+		resp.Status = liveStatusUnpublished
+	}
+	_ = httputil.EncodeJSON(w, http.StatusOK, resp)
 }
 
 func (handler *Handler) updateMarket(w http.ResponseWriter, r *http.Request) {

@@ -37,6 +37,21 @@ services:
     networks:
       - shisa
 
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    # The foundry image's entrypoint is `sh -c`, so command is one string.
+    command: ["anvil --host 0.0.0.0"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shisa
+
   prometheus:
     image: prom/prometheus:v3.2.0
     ports:
@@ -165,10 +180,19 @@ services:
       HTTP_PORT: "8081"
       METRICS_PORT: "9092"
       OTEL_EXPORTER_OTLP_ENDPOINT: tempo:4317
+      POLYGON_RPC_URL: http://anvil:8545
+      # Placeholder addresses: no contracts are deployed on the bare anvil
+      # node yet (local deploy harness is tracked separately), so the
+      # chain-verified admin endpoints return 422 locally. The zero address
+      # disables the NegRisk reader entirely.
+      CONDITIONAL_TOKENS_ADDRESS: "0x0000000000000000000000000000000000000001"
+      NEG_RISK_ADAPTER_ADDRESS: "0x0000000000000000000000000000000000000000"
     depends_on:
       postgres:
         condition: service_healthy
       nats:
+        condition: service_healthy
+      anvil:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "/bin/grpc_health_probe", "-addr=:9002"]

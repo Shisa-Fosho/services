@@ -403,6 +403,10 @@ func (repo *PGRepository) UpdateMarketMetadata(ctx context.Context, id string, u
 // UpdateStatus changes the status of a market. Validates the transition
 // inside a transaction holding a row lock, then returns the updated row
 // via UPDATE ... RETURNING — no extra round-trip.
+//
+// Idempotent: a market already in the requested status is returned as-is
+// rather than rejected, so a caller retrying after a failed downstream
+// publish reaches the publish step again instead of getting a conflict.
 func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status Status) (*Market, error) {
 	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
@@ -419,6 +423,21 @@ func (repo *PGRepository) UpdateStatus(ctx context.Context, id string, status St
 			return nil, fmt.Errorf("updating market %s status: %w", id, ErrNotFound)
 		}
 		return nil, fmt.Errorf("updating market status: reading current: %w", err)
+	}
+
+	if current == status {
+		rows, err := tx.Query(ctx, `SELECT * FROM markets WHERE id = $1`, id)
+		if err != nil {
+			return nil, fmt.Errorf("re-reading market %s: %w", id, err)
+		}
+		market, err := pgx.CollectOneRow(rows, pgx.RowToAddrOfStructByName[Market])
+		if err != nil {
+			return nil, fmt.Errorf("re-reading market %s: %w", id, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("updating market status: committing: %w", err)
+		}
+		return market, nil
 	}
 
 	if err := ValidateStatusTransition(current, status); err != nil {
@@ -494,30 +513,46 @@ func (repo *PGRepository) PauseMarkets(ctx context.Context, marketIDs []string) 
 			strings.Join(missing, ", "), ErrNotFound)
 	}
 
+	// Already-Paused markets are idempotent no-ops (a retry after a failed
+	// publish must succeed); any other non-Active status is a real conflict.
+	var pending []string
 	var invalid []string
 	for _, id := range sorted {
+		if found[id] == StatusPaused {
+			continue
+		}
 		if err := ValidateStatusTransition(found[id], StatusPaused); err != nil {
 			invalid = append(invalid, fmt.Sprintf("%s (status=%s)", id, found[id].String()))
+			continue
 		}
+		pending = append(pending, id)
 	}
 	if len(invalid) > 0 {
 		return nil, fmt.Errorf("markets not in Active status: %s: %w",
 			strings.Join(invalid, ", "), ErrInvalidTransition)
 	}
 
-	updateRows, err := tx.Query(ctx,
-		`UPDATE markets SET status = $1, updated_at = now()
-		 WHERE id = ANY($2) RETURNING *`,
-		StatusPaused, sorted,
+	if len(pending) > 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE markets SET status = $1, updated_at = now() WHERE id = ANY($2)`,
+			StatusPaused, pending,
+		); err != nil {
+			return nil, fmt.Errorf("updating markets to Paused: %w", err)
+		}
+	}
+
+	// Return every requested market (not just the freshly updated ones) so
+	// the caller republishes config for already-paused markets on retry.
+	readRows, err := tx.Query(ctx,
+		`SELECT * FROM markets WHERE id = ANY($1) ORDER BY id`, sorted,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("updating markets to Paused: %w", err)
+		return nil, fmt.Errorf("re-reading paused markets: %w", err)
 	}
-	markets, err := pgx.CollectRows(updateRows, pgx.RowToAddrOfStructByName[Market])
+	markets, err := pgx.CollectRows(readRows, pgx.RowToAddrOfStructByName[Market])
 	if err != nil {
 		return nil, fmt.Errorf("collecting paused markets: %w", err)
 	}
-	sort.Slice(markets, func(i, j int) bool { return markets[i].ID < markets[j].ID })
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("pausing markets: committing: %w", err)
@@ -665,12 +700,12 @@ func (repo *PGRepository) transitionMarketsInEvent(ctx context.Context, eventID 
 		return nil, nil, err
 	}
 
-	targetIDs, err := validateTransitionTargets(spec, siblings, eventID)
+	pendingIDs, err := validateTransitionTargets(spec, siblings, eventID)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if err := applyTransitionToMarkets(ctx, tx, spec, targetIDs, siblings); err != nil {
+	if err := applyTransitionToMarkets(ctx, tx, spec, pendingIDs, siblings); err != nil {
 		return nil, nil, err
 	}
 
@@ -704,25 +739,33 @@ func lockEventForTransition(ctx context.Context, tx pgx.Tx, eventID string) erro
 	return nil
 }
 
+// siblingMarket is the locked in-transaction view of a market used by the
+// transition phases: current status, plus the stored outcome so a resolve
+// retry can be recognized as idempotent (same outcome) vs conflicting.
+type siblingMarket struct {
+	status  Status
+	outcome *Outcome
+}
+
 // lockSiblingMarkets row-locks every market belonging to the event and
-// returns a map of marketID → current status. The lock holds for the
-// lifetime of the surrounding transaction.
-func lockSiblingMarkets(ctx context.Context, tx pgx.Tx, eventID string) (map[string]Status, error) {
+// returns a map of marketID → current status + outcome. The lock holds
+// for the lifetime of the surrounding transaction.
+func lockSiblingMarkets(ctx context.Context, tx pgx.Tx, eventID string) (map[string]siblingMarket, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT id, status FROM markets WHERE event_id = $1 FOR UPDATE`, eventID,
+		`SELECT id, status, outcome FROM markets WHERE event_id = $1 FOR UPDATE`, eventID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("locking sibling markets: %w", err)
 	}
 	defer rows.Close()
-	siblings := make(map[string]Status)
+	siblings := make(map[string]siblingMarket)
 	for rows.Next() {
 		var id string
-		var status Status
-		if err := rows.Scan(&id, &status); err != nil {
+		var sibling siblingMarket
+		if err := rows.Scan(&id, &sibling.status, &sibling.outcome); err != nil {
 			return nil, fmt.Errorf("scanning sibling market: %w", err)
 		}
-		siblings[id] = status
+		siblings[id] = sibling
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterating sibling markets: %w", err)
@@ -730,12 +773,17 @@ func lockSiblingMarkets(ctx context.Context, tx pgx.Tx, eventID string) (map[str
 	return siblings, nil
 }
 
-// validateTransitionTargets returns the ordered list of market IDs the
-// transition will touch, after verifying each belongs to the event and
-// is in a state that can transition to spec.targetStatus. Returns
-// ErrInvalidMarket for membership failures and an ErrInvalidTransition-
-// wrapping error for state-transition failures.
-func validateTransitionTargets(spec transitionSpec, siblings map[string]Status, eventID string) ([]string, error) {
+// validateTransitionTargets returns the market IDs the transition still
+// needs to touch, after verifying each target belongs to the event and is
+// in a state that can transition to spec.targetStatus.
+//
+// Idempotency: a target already in the target state is skipped, not
+// rejected — for resolve, only when its stored outcome matches the
+// declared one (a different outcome is a genuine conflict). This lets a
+// caller retry the whole operation after a failed downstream publish.
+// Returns ErrInvalidMarket for membership failures and an
+// ErrInvalidTransition-wrapping error for state-transition failures.
+func validateTransitionTargets(spec transitionSpec, siblings map[string]siblingMarket, eventID string) ([]string, error) {
 	var targetIDs []string
 	if spec.resolveOutcome != nil {
 		targetIDs = make([]string, 0, len(spec.resolveOutcome))
@@ -745,27 +793,42 @@ func validateTransitionTargets(spec transitionSpec, siblings map[string]Status, 
 	} else {
 		targetIDs = spec.voidedMarketIDs
 	}
+	var pending []string
 	for _, marketID := range targetIDs {
-		current, ok := siblings[marketID]
+		sibling, ok := siblings[marketID]
 		if !ok {
 			return nil, fmt.Errorf("market %s does not belong to event %s: %w", marketID, eventID, ErrInvalidMarket)
 		}
-		if err := ValidateStatusTransition(current, spec.targetStatus); err != nil {
+		if sibling.status == spec.targetStatus {
+			if spec.resolveOutcome != nil {
+				declared := spec.resolveOutcome[marketID]
+				if sibling.outcome == nil || *sibling.outcome != declared {
+					return nil, fmt.Errorf(
+						"market %s already resolved with a different outcome: %w",
+						marketID, ErrInvalidTransition)
+				}
+			}
+			continue
+		}
+		if err := ValidateStatusTransition(sibling.status, spec.targetStatus); err != nil {
 			return nil, err
 		}
+		pending = append(pending, marketID)
 	}
-	return targetIDs, nil
+	return pending, nil
 }
 
 // applyTransitionToMarkets writes the new status (and outcome, when
-// resolving) to each target market. Mutates siblings in place to reflect
-// the post-update statuses — the next phase reads it to decide whether
-// to auto-flip the event row.
-func applyTransitionToMarkets(ctx context.Context, tx pgx.Tx, spec transitionSpec, targetIDs []string, siblings map[string]Status) error {
+// resolving) to each pending market. Targets already in the target state
+// were filtered out by validateTransitionTargets. Mutates siblings in
+// place to reflect the post-update statuses — the next phase reads it to
+// decide whether to auto-flip the event row.
+func applyTransitionToMarkets(ctx context.Context, tx pgx.Tx, spec transitionSpec, pendingIDs []string, siblings map[string]siblingMarket) error {
 	if spec.resolveOutcome != nil {
 		// Per-market UPDATE: outcomes vary, so a single ANY() statement
 		// won't carry them. The market set is tiny (< 50 in practice).
-		for marketID, outcome := range spec.resolveOutcome {
+		for _, marketID := range pendingIDs {
+			outcome := spec.resolveOutcome[marketID]
 			if _, err := tx.Exec(ctx,
 				`UPDATE markets
 				 SET    status = $1,
@@ -776,8 +839,11 @@ func applyTransitionToMarkets(ctx context.Context, tx pgx.Tx, spec transitionSpe
 			); err != nil {
 				return fmt.Errorf("updating market %s: %w", marketID, err)
 			}
-			siblings[marketID] = spec.targetStatus
+			siblings[marketID] = siblingMarket{status: spec.targetStatus, outcome: &outcome}
 		}
+		return nil
+	}
+	if len(pendingIDs) == 0 {
 		return nil
 	}
 	if _, err := tx.Exec(ctx,
@@ -785,12 +851,12 @@ func applyTransitionToMarkets(ctx context.Context, tx pgx.Tx, spec transitionSpe
 		 SET    status = $1,
 		        updated_at = now()
 		 WHERE  id = ANY($2)`,
-		spec.targetStatus, targetIDs,
+		spec.targetStatus, pendingIDs,
 	); err != nil {
 		return fmt.Errorf("voiding markets: %w", err)
 	}
-	for _, marketID := range targetIDs {
-		siblings[marketID] = spec.targetStatus
+	for _, marketID := range pendingIDs {
+		siblings[marketID] = siblingMarket{status: spec.targetStatus}
 	}
 	return nil
 }
@@ -799,15 +865,15 @@ func applyTransitionToMarkets(ctx context.Context, tx pgx.Tx, spec transitionSpe
 // when every sibling market is itself terminal. Resolved wins over
 // Voided in mixed-terminal events (any sibling Resolved ⇒ event
 // Resolved; all-Voided ⇒ event Voided). No-op otherwise.
-func maybeFlipEventStatus(ctx context.Context, tx pgx.Tx, siblings map[string]Status, eventID string) error {
+func maybeFlipEventStatus(ctx context.Context, tx pgx.Tx, siblings map[string]siblingMarket, eventID string) error {
 	allTerminal := true
 	hasResolved := false
-	for _, status := range siblings {
-		if !status.IsTerminal() {
+	for _, sibling := range siblings {
+		if !sibling.status.IsTerminal() {
 			allTerminal = false
 			break
 		}
-		if status == StatusResolved {
+		if sibling.status == StatusResolved {
 			hasResolved = true
 		}
 	}

@@ -75,8 +75,10 @@ type Repository interface {
 	UpdateMarketMetadata(ctx context.Context, id string, update *MarketUpdate) (*Market, error)
 
 	// UpdateStatus changes the status of a market and returns the updated
-	// row. Returns ErrInvalidTransition if the transition is not allowed,
-	// or ErrNotFound if the market does not exist.
+	// row. Idempotent: a market already in the requested status is
+	// returned unchanged (no error), so callers can retry after a failed
+	// downstream publish. Returns ErrInvalidTransition if the transition
+	// is not allowed, or ErrNotFound if the market does not exist.
 	UpdateStatus(ctx context.Context, id string, status Status) (*Market, error)
 
 	// PauseMarkets atomically transitions every market in marketIDs from
@@ -84,10 +86,13 @@ type Repository interface {
 	// sorted-ID order to avoid deadlocks with concurrent bulk operations.
 	//
 	// Semantics are all-or-nothing: if any market is missing, returns
-	// ErrNotFound; if any market is not in Active status, returns
-	// ErrInvalidTransition; in either case no rows are updated. Returns
+	// ErrNotFound; if any market is in a status other than Active or
+	// Paused, returns ErrInvalidTransition; in either case no rows are
+	// updated. Already-Paused markets are idempotent no-ops, so retrying
+	// the same batch after a failed publish succeeds. Returns
 	// ErrInvalidMarket if marketIDs is empty. On success, the returned
-	// slice carries the updated rows in sorted-ID order.
+	// slice carries every requested market (updated or already Paused)
+	// in sorted-ID order.
 	PauseMarkets(ctx context.Context, marketIDs []string) ([]*Market, error)
 
 	// UpdateMarketPrices updates the current prices, volume, and open interest
@@ -111,10 +116,15 @@ type Repository interface {
 	// the event is in a terminal status (Resolved or Voided), event.status
 	// auto-flips to Resolved.
 	//
+	// Idempotent: a named market already Resolved with the same outcome
+	// is a no-op (the call still succeeds and returns it), so callers can
+	// retry after a failed downstream publish. Already Resolved with a
+	// different outcome returns ErrInvalidTransition.
+	//
 	// Errors: ErrNotFound for missing event; ErrInvalidEvent if outcomes
 	// is empty; ErrInvalidMarket if any key in outcomes doesn't belong to
-	// this event; ErrInvalidTransition if any named market is not
-	// currently Active.
+	// this event; ErrInvalidTransition if any named market is in a status
+	// that cannot reach Resolved.
 	ResolveMarketsInEvent(ctx context.Context, eventID string, outcomes map[string]Outcome) (*Event, []*Market, error)
 
 	// VoidMarketsInEvent atomically transitions every market in marketIDs
@@ -123,7 +133,8 @@ type Repository interface {
 	// event.status auto-flips to either Resolved (if any are Resolved) or
 	// Voided (if all are Voided).
 	//
-	// Error contract mirrors ResolveMarketsInEvent.
+	// Error contract mirrors ResolveMarketsInEvent, including idempotency:
+	// already-Voided markets are no-ops so the call is retryable.
 	//
 	// Note: the handler layer rejects this path for NEG_RISK events. The
 	// repository doesn't enforce that — callers should branch by event

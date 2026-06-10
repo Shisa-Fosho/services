@@ -27,15 +27,34 @@ func cleanTables(t *testing.T, pool *pgxpool.Pool) {
 func insertTestMarket(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	ctx := context.Background()
-	var id string
+	var categoryID string
 	err := pool.QueryRow(ctx,
-		`INSERT INTO markets (
-			slug, question, outcome_yes_label, outcome_no_label,
-			token_id_yes, token_id_no, condition_id, status,
-			price_yes, price_no, volume, open_interest
-		) VALUES ('test-market-data', 'Test?', 'Yes', 'No', 'ty', 'tn', 'c1', 0, 50, 50, 0, 0)
-		ON CONFLICT (slug) DO UPDATE SET slug = markets.slug
+		`INSERT INTO categories (name, slug) VALUES ('Data Test', 'data-test')
+		ON CONFLICT (slug) DO UPDATE SET slug = categories.slug
 		RETURNING id`,
+	).Scan(&categoryID)
+	if err != nil {
+		t.Fatalf("inserting test category: %v", err)
+	}
+	var eventID string
+	err = pool.QueryRow(ctx,
+		`INSERT INTO events (slug, title, category_id, event_type, end_date)
+		VALUES ('test-event-data', 'Test Event', $1, 0, now() + interval '30 days')
+		ON CONFLICT (slug) DO UPDATE SET slug = events.slug
+		RETURNING id`, categoryID,
+	).Scan(&eventID)
+	if err != nil {
+		t.Fatalf("inserting test event: %v", err)
+	}
+	var id string
+	err = pool.QueryRow(ctx,
+		`INSERT INTO markets (
+			slug, event_id, question, outcome_yes_label, outcome_no_label,
+			token_id_yes, token_id_no, condition_id, question_id, status,
+			price_yes, price_no, volume, open_interest, tick_size, min_size
+		) VALUES ('test-market-data', $1, 'Test?', 'Yes', 'No', 'ty', 'tn', 'c1', 'q1', 0, 50, 50, 0, 0, 1, 5)
+		ON CONFLICT (slug) DO UPDATE SET slug = markets.slug
+		RETURNING id`, eventID,
 	).Scan(&id)
 	if err != nil {
 		t.Fatalf("inserting test market: %v", err)

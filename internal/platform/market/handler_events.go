@@ -93,7 +93,6 @@ func (handler *Handler) updateEvent(w http.ResponseWriter, r *http.Request) {
 // NegRisk events return 400 unconditionally — voiding NegRisk markets is
 // deferred (no on-chain primitive).
 type voidEventRequest struct {
-	TxHash    string   `json:"tx_hash,omitempty"`
 	MarketIDs []string `json:"market_ids,omitempty"`
 }
 

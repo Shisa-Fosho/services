@@ -2,6 +2,7 @@ package market
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -212,5 +213,50 @@ func TestStatusChangePayload_OutcomeIncludedWhenSet(t *testing.T) {
 	}
 	if got["outcome"] != "YES" {
 		t.Errorf("outcome = %v, want \"YES\"", got["outcome"])
+	}
+}
+
+func TestRetryOperation_SucceedsAfterTransientFailures(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	err := retryOperation(3, 0, func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("transient")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected success on third attempt, got: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestRetryOperation_GivesUpAfterAttempts(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	wantErr := errors.New("persistent")
+	err := retryOperation(3, 0, func() error {
+		calls++
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected the last error, got: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3", calls)
+	}
+}
+
+func TestRetryOperation_NoRetryOnImmediateSuccess(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	if err := retryOperation(3, 0, func() error { calls++; return nil }); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
 	}
 }

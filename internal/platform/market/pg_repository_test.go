@@ -457,8 +457,8 @@ func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
 	ctx := context.Background()
 
 	seedBinaryEvent(t, repo, "active")
-	_, _ = seedBinaryEventStatus(t, repo, "paused", StatusActive)
-	pausedEventID, _ := seedBinaryEventStatus(t, repo, "paused-status", StatusActive)
+	seedBinaryEvent(t, repo, "paused")
+	pausedEventID, _ := seedBinaryEvent(t, repo, "paused-status")
 	if _, err := pool.Exec(ctx,
 		`UPDATE events SET status = $1 WHERE id = $2`, StatusPaused, pausedEventID,
 	); err != nil {
@@ -480,12 +480,6 @@ func TestPGRepository_ListEvents_StatusFilter(t *testing.T) {
 	if len(all) != 3 {
 		t.Errorf("expected 3 events total, got %d", len(all))
 	}
-}
-
-// seedBinaryEventStatus is like seedBinaryEvent but lets the caller set the
-// initial event status via a follow-up UPDATE.
-func seedBinaryEventStatus(t *testing.T, repo *PGRepository, slug string, _ Status) (string, string) {
-	return seedBinaryEvent(t, repo, slug)
 }
 
 // --- update paths --------------------------------------------------------
@@ -669,7 +663,7 @@ func TestPGRepository_PauseMarkets_OneNotFound_RollsBack(t *testing.T) {
 	}
 }
 
-func TestPGRepository_PauseMarkets_OneAlreadyPaused_RollsBack(t *testing.T) {
+func TestPGRepository_PauseMarkets_OneAlreadyPaused_IsIdempotent(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -681,6 +675,34 @@ func TestPGRepository_PauseMarkets_OneAlreadyPaused_RollsBack(t *testing.T) {
 		t.Fatalf("seeding m2 as paused: %v", err)
 	}
 
+	updated, err := repo.PauseMarkets(ctx, []string{m1, m2})
+	if err != nil {
+		t.Fatalf("pausing with one already paused: %v", err)
+	}
+	// Both requested markets come back paused — the already-paused one is
+	// included so callers can republish its config on retry.
+	if len(updated) != 2 {
+		t.Fatalf("updated len = %d, want 2", len(updated))
+	}
+	for _, market := range updated {
+		if market.Status != StatusPaused {
+			t.Errorf("market %s status = %s, want PAUSED", market.ID, market.Status)
+		}
+	}
+}
+
+func TestPGRepository_PauseMarkets_OneResolved_RollsBack(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, m1 := seedBinaryEvent(t, repo, "bp-res-1")
+	_, m2 := seedBinaryEvent(t, repo, "bp-res-2")
+	if _, err := repo.UpdateStatus(ctx, m2, StatusResolved); err != nil {
+		t.Fatalf("seeding m2 as resolved: %v", err)
+	}
+
 	_, err := repo.PauseMarkets(ctx, []string{m1, m2})
 	if !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
@@ -690,8 +712,27 @@ func TestPGRepository_PauseMarkets_OneAlreadyPaused_RollsBack(t *testing.T) {
 		t.Fatalf("loading m1: %v", err)
 	}
 	if got.Status != StatusActive {
-		t.Errorf("m1 status = %s, want ACTIVE (m2 already paused must not partially commit m1)",
+		t.Errorf("m1 status = %s, want ACTIVE (resolved m2 must not partially commit m1)",
 			got.Status)
+	}
+}
+
+func TestPGRepository_UpdateStatus_SameStatusIsIdempotent(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	_, marketID := seedBinaryEvent(t, repo, "idem-status")
+	if _, err := repo.UpdateStatus(ctx, marketID, StatusPaused); err != nil {
+		t.Fatalf("first pause: %v", err)
+	}
+	got, err := repo.UpdateStatus(ctx, marketID, StatusPaused)
+	if err != nil {
+		t.Fatalf("repeat pause should be a no-op, got: %v", err)
+	}
+	if got.Status != StatusPaused {
+		t.Errorf("status = %s, want PAUSED", got.Status)
 	}
 }
 
@@ -1049,6 +1090,70 @@ func TestPGRepository_VoidMarketsInEvent_AllVoid(t *testing.T) {
 	updatedEvent, _, err := repo.VoidMarketsInEvent(ctx, createdEvent.ID, ids)
 	if err != nil {
 		t.Fatalf("voiding all: %v", err)
+	}
+	if updatedEvent.Status != StatusVoided {
+		t.Errorf("event status = %s, want VOIDED", updatedEvent.Status)
+	}
+}
+
+func TestPGRepository_ResolveMarketsInEvent_RetrySameOutcomeIsIdempotent(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, marketID := seedBinaryEvent(t, repo, "idem-resolve")
+	outcomes := map[string]Outcome{marketID: OutcomeYes}
+
+	if _, _, err := repo.ResolveMarketsInEvent(ctx, eventID, outcomes); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	_, markets, err := repo.ResolveMarketsInEvent(ctx, eventID, outcomes)
+	if err != nil {
+		t.Fatalf("retry with same outcome should be a no-op, got: %v", err)
+	}
+	if len(markets) != 1 || markets[0].Status != StatusResolved {
+		t.Errorf("retry must still return the resolved market")
+	}
+	if markets[0].Outcome == nil || *markets[0].Outcome != OutcomeYes {
+		t.Errorf("outcome = %v, want YES", markets[0].Outcome)
+	}
+}
+
+func TestPGRepository_ResolveMarketsInEvent_RetryDifferentOutcomeConflicts(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, marketID := seedBinaryEvent(t, repo, "conflict-resolve")
+	if _, _, err := repo.ResolveMarketsInEvent(ctx, eventID, map[string]Outcome{marketID: OutcomeYes}); err != nil {
+		t.Fatalf("first resolve: %v", err)
+	}
+	_, _, err := repo.ResolveMarketsInEvent(ctx, eventID, map[string]Outcome{marketID: OutcomeNo})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expected ErrInvalidTransition for conflicting outcome, got: %v", err)
+	}
+}
+
+func TestPGRepository_VoidMarketsInEvent_RetryIsIdempotent(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, marketID := seedBinaryEvent(t, repo, "idem-void")
+	ids := []string{marketID}
+
+	if _, _, err := repo.VoidMarketsInEvent(ctx, eventID, ids); err != nil {
+		t.Fatalf("first void: %v", err)
+	}
+	updatedEvent, markets, err := repo.VoidMarketsInEvent(ctx, eventID, ids)
+	if err != nil {
+		t.Fatalf("retry void should be a no-op, got: %v", err)
+	}
+	if len(markets) != 1 || markets[0].Status != StatusVoided {
+		t.Errorf("retry must still return the voided market")
 	}
 	if updatedEvent.Status != StatusVoided {
 		t.Errorf("event status = %s, want VOIDED", updatedEvent.Status)

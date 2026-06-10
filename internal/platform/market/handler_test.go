@@ -3,6 +3,7 @@ package market
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,8 +79,13 @@ func (f *fakeRepo) PauseMarkets(_ context.Context, marketIDs []string) ([]*Marke
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("markets %v: %w", missing, ErrNotFound)
 	}
+	// Mirrors PGRepository: already-Paused is an idempotent no-op; any
+	// other non-Active status fails the whole batch.
 	var invalid []string
 	for _, id := range marketIDs {
+		if f.markets[id].Status == StatusPaused {
+			continue
+		}
 		if err := ValidateStatusTransition(f.markets[id].Status, StatusPaused); err != nil {
 			invalid = append(invalid, id)
 		}
@@ -93,8 +99,10 @@ func (f *fakeRepo) PauseMarkets(_ context.Context, marketIDs []string) ([]*Marke
 	out := make([]*Market, 0, len(sorted))
 	for _, id := range sorted {
 		market := f.markets[id]
-		market.Status = StatusPaused
-		market.UpdatedAt = time.Now().UTC()
+		if market.Status != StatusPaused {
+			market.Status = StatusPaused
+			market.UpdatedAt = time.Now().UTC()
+		}
 		copyOf := *market
 		out = append(out, &copyOf)
 	}
@@ -169,6 +177,10 @@ func (f *fakeRepo) UpdateStatus(_ context.Context, id string, status Status) (*M
 	m, ok := f.markets[id]
 	if !ok {
 		return nil, ErrNotFound
+	}
+	// Mirrors PGRepository: already at the target status is a no-op.
+	if m.Status == status {
+		return m, nil
 	}
 	if err := ValidateStatusTransition(m.Status, status); err != nil {
 		return nil, err
@@ -293,11 +305,19 @@ func (f *fakeRepo) ResolveMarketsInEvent(_ context.Context, eventID string, outc
 	if len(outcomes) == 0 {
 		return nil, nil, ErrInvalidEvent
 	}
-	// Verify ownership + Active status.
-	for marketID := range outcomes {
+	// Verify ownership + transitionability. Mirrors PGRepository:
+	// already Resolved with the same outcome is an idempotent no-op;
+	// a different outcome is a conflict.
+	for marketID, outcome := range outcomes {
 		m, ok := f.markets[marketID]
 		if !ok || m.EventID != eventID {
 			return nil, nil, ErrInvalidMarket
+		}
+		if m.Status == StatusResolved {
+			if m.Outcome == nil || *m.Outcome != outcome {
+				return nil, nil, ErrInvalidTransition
+			}
+			continue
 		}
 		if m.Status != StatusActive {
 			return nil, nil, ErrInvalidTransition
@@ -351,12 +371,13 @@ func (f *fakeRepo) VoidMarketsInEvent(_ context.Context, eventID string, marketI
 	if len(marketIDs) == 0 {
 		return nil, nil, ErrInvalidEvent
 	}
+	// Mirrors PGRepository: already-Voided is an idempotent no-op.
 	for _, marketID := range marketIDs {
 		m, ok := f.markets[marketID]
 		if !ok || m.EventID != eventID {
 			return nil, nil, ErrInvalidMarket
 		}
-		if m.Status != StatusActive {
+		if m.Status != StatusActive && m.Status != StatusVoided {
 			return nil, nil, ErrInvalidTransition
 		}
 	}
@@ -442,10 +463,15 @@ func (f *fakeRepo) DeleteCategory(_ context.Context, id string) error {
 }
 
 // fakePublisher records publish calls and lets tests force errors on either
-// PublishMarketConfig or PublishStatusChange. It satisfies configPublisher.
+// PublishMarketConfig or PublishStatusChange. It satisfies configStore.
+// liveStatus seeds LiveStatus responses keyed by market ID; markets absent
+// from the map read back as unpublished.
 type fakePublisher struct {
 	configErr error
 	statusErr error
+
+	liveStatus    map[string]string
+	liveStatusErr error
 
 	configCalls []*Market
 	statusCalls []fakeStatusCall
@@ -480,6 +506,14 @@ func (p *fakePublisher) PublishStatusChangeWithOutcome(_ context.Context, market
 	}
 	p.statusCalls = append(p.statusCalls, fakeStatusCall{MarketID: marketID, Status: status, Outcome: outcome})
 	return nil
+}
+
+func (p *fakePublisher) LiveStatus(marketID string) (string, bool, error) {
+	if p.liveStatusErr != nil {
+		return "", false, p.liveStatusErr
+	}
+	status, ok := p.liveStatus[marketID]
+	return status, ok, nil
 }
 
 // fakeChainReader is an in-memory double satisfying both ctReader and
@@ -581,7 +615,7 @@ func newHandlerForTest(t *testing.T, repo Repository) *Handler {
 
 // newHandlerWithPublisher is like newHandlerForTest but lets the caller
 // inject a fakePublisher with pre-set error hooks.
-func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configPublisher) *Handler {
+func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configStore) *Handler {
 	t.Helper()
 	logger := zap.NewNop()
 	chain := newFakeChainReader()
@@ -590,7 +624,7 @@ func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configPubl
 
 // newHandlerWithChain injects both a publisher and a chain reader,
 // used by tests that need to pre-load on-chain state.
-func newHandlerWithChain(t *testing.T, repo Repository, publisher configPublisher, chain *fakeChainReader) *Handler {
+func newHandlerWithChain(t *testing.T, repo Repository, publisher configStore, chain *fakeChainReader) *Handler {
 	t.Helper()
 	logger := zap.NewNop()
 	return NewHandler(repo, publisher, chain, chain, logger)
@@ -1072,7 +1106,7 @@ func TestHandler_SetFeeRate_RepoError(t *testing.T) {
 // muxWithPublisher mirrors registeredMux but lets the caller substitute a
 // fakePublisher with pre-set error hooks, for tests that exercise the
 // pause/resume/metadata publishing paths.
-func muxWithPublisher(t *testing.T, repo Repository, publisher configPublisher) *http.ServeMux {
+func muxWithPublisher(t *testing.T, repo Repository, publisher configStore) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
 	h := newHandlerWithPublisher(t, repo, publisher)
@@ -1171,7 +1205,7 @@ func TestHandler_BulkPauseMarkets_OneNotFound_FailsAllOrNothing(t *testing.T) {
 	}
 }
 
-func TestHandler_BulkPauseMarkets_OneAlreadyPaused_FailsAllOrNothing(t *testing.T) {
+func TestHandler_BulkPauseMarkets_OneAlreadyPaused_IsIdempotent(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
 	m1 := repo.putMarket(&Market{Question: "Q1", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
@@ -1181,12 +1215,37 @@ func TestHandler_BulkPauseMarkets_OneAlreadyPaused_FailsAllOrNothing(t *testing.
 
 	body := mustJSON(t, bulkPauseRequest{MarketIDs: []string{m1.ID, m2.ID}})
 	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/bulk-pause", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200 (already-paused is a no-op)", rec.Code, rec.Body.String())
+	}
+	if repo.markets[m1.ID].Status != StatusPaused {
+		t.Errorf("m1 status = %s, want PAUSED", repo.markets[m1.ID].Status)
+	}
+	// Both markets republish so a retry after a failed publish heals KV.
+	if len(pub.configCalls) != 2 {
+		t.Errorf("config calls = %d, want 2", len(pub.configCalls))
+	}
+}
+
+func TestHandler_BulkPauseMarkets_OneResolved_FailsAllOrNothing(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	m1 := repo.putMarket(&Market{Question: "Q1", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	m2 := repo.putMarket(&Market{Question: "Q2", Status: StatusResolved, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{}
+	mux := muxWithPublisher(t, repo, pub)
+
+	body := mustJSON(t, bulkPauseRequest{MarketIDs: []string{m1.ID, m2.ID}})
+	rec := doRequest(t, mux, http.MethodPost, "/admin/markets/bulk-pause", body)
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
 	}
 	if repo.markets[m1.ID].Status != StatusActive {
-		t.Errorf("m1 status = %s, want ACTIVE (m2 already paused must not partially commit)",
+		t.Errorf("m1 status = %s, want ACTIVE (resolved m2 must not partially commit)",
 			repo.markets[m1.ID].Status)
+	}
+	if len(pub.configCalls) != 0 {
+		t.Errorf("config calls = %d, want 0 (no publishes on failed batch)", len(pub.configCalls))
 	}
 }
 
@@ -1372,7 +1431,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 func mkBigInt(n int) *big.Int { return big.NewInt(int64(n)) }
 
 // muxWithChain wires a handler with caller-supplied publisher + chain.
-func muxWithChain(t *testing.T, repo Repository, publisher configPublisher, chain *fakeChainReader) *http.ServeMux {
+func muxWithChain(t *testing.T, repo Repository, publisher configStore, chain *fakeChainReader) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
 	h := newHandlerWithChain(t, repo, publisher, chain)
@@ -1390,15 +1449,34 @@ func seedCatID(t *testing.T, repo *fakeRepo, slug string) string {
 	return cat.ID
 }
 
-// fixedCondHash is a stable bytes32 hex for tests that don't care about
-// the actual identifier — just need something common.HexToHash can parse.
+// fixedCondHash is a stable, well-formed bytes32 hex for tests that don't
+// care about the actual identifier. The slug is hex-encoded so any input
+// yields a valid 0x-prefixed 64-hex-char string (the create handlers
+// reject malformed hex at the boundary).
 func fixedCondHash(slug string) string {
-	// 32 bytes = 64 hex chars. Pad slug to fit.
-	hex := slug
-	for len(hex) < 64 {
-		hex += "0"
+	encoded := hex.EncodeToString([]byte(slug))
+	for len(encoded) < 64 {
+		encoded += "0"
 	}
-	return "0x" + hex[:64]
+	return "0x" + encoded[:64]
+}
+
+// negRiskQuestionID derives the questionId for a NegRisk marketId and
+// question index: first 31 bytes shared with the marketId, final byte =
+// index (NegRiskIdLib layout, matching the create handler's coherence
+// check).
+func negRiskQuestionID(marketIDHex string, index byte) string {
+	id := common.HexToHash(marketIDHex)
+	id[31] = index
+	return id.Hex()
+}
+
+// negRiskMarketIDHex builds a well-formed adapter marketId (final byte
+// zero) from a slug.
+func negRiskMarketIDHex(slug string) string {
+	id := common.HexToHash(fixedCondHash(slug))
+	id[31] = 0
+	return id.Hex()
 }
 
 func binaryEventBody(slug, catID, condHex, questionHex string) []byte {
@@ -1570,8 +1648,9 @@ func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
 	catID := seedCatID(t, repo, "politics")
 	pub := &fakePublisher{}
 	chain := newFakeChainReader()
-	q1 := fixedCondHash("aa")
-	q2 := fixedCondHash("bb")
+	negRiskID := negRiskMarketIDHex("neg-success")
+	q1 := negRiskQuestionID(negRiskID, 0)
+	q2 := negRiskQuestionID(negRiskID, 1)
 	c1 := common.HexToHash(fixedCondHash("dd"))
 	c2 := common.HexToHash(fixedCondHash("ee"))
 	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
@@ -1584,7 +1663,7 @@ func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
 		"slug":"neg","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"neg_risk_market_id":"` + fixedCondHash("ff") + `",
+		"neg_risk_market_id":"` + negRiskID + `",
 		"markets":[
 			{"slug":"alice","question":"Will Alice win?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty1","token_id_no":"tn1","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
 			{"slug":"bob","question":"Will Bob win?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty2","token_id_no":"tn2","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
@@ -1800,11 +1879,11 @@ func TestHandler_ResolveEvent_NegRiskFriendlyError(t *testing.T) {
 	catID := seedCatID(t, repo, "x")
 	pub := &fakePublisher{}
 	chain := newFakeChainReader()
-	q1 := fixedCondHash("aa")
-	q2 := fixedCondHash("bb")
+	negID := negRiskMarketIDHex("neg-fe")
+	q1 := negRiskQuestionID(negID, 0)
+	q2 := negRiskQuestionID(negID, 1)
 	c1 := common.HexToHash(fixedCondHash("cc"))
 	c2 := common.HexToHash(fixedCondHash("dd"))
-	negID := fixedCondHash("ee")
 	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
 	chain.negRiskCondIDs[common.HexToHash(q2)] = c2
 	chain.slotCount[c1] = 2
@@ -1949,8 +2028,9 @@ func TestHandler_VoidEvent_NegRisk_AlwaysRejected(t *testing.T) {
 	catID := seedCatID(t, repo, "x")
 	pub := &fakePublisher{}
 	chain := newFakeChainReader()
-	q1 := fixedCondHash("aa")
-	q2 := fixedCondHash("bb")
+	negRiskID := negRiskMarketIDHex("neg-void")
+	q1 := negRiskQuestionID(negRiskID, 0)
+	q2 := negRiskQuestionID(negRiskID, 1)
 	c1 := common.HexToHash(fixedCondHash("cc"))
 	c2 := common.HexToHash(fixedCondHash("dd"))
 	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
@@ -1963,7 +2043,7 @@ func TestHandler_VoidEvent_NegRisk_AlwaysRejected(t *testing.T) {
 		"slug":"neg-void","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"neg_risk_market_id":"` + fixedCondHash("ee") + `",
+		"neg_risk_market_id":"` + negRiskID + `",
 		"markets":[
 			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
 			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
@@ -2046,5 +2126,285 @@ func TestHandler_SetTradingConfig_PublishFailure(t *testing.T) {
 	rec := doRequest(t, mux, http.MethodPut, "/admin/markets/"+seed.ID+"/trading-config", body)
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- live-status overlay on GET /admin/markets/{id} ----------------------
+
+func TestHandler_GetMarket_StatusComesFromBucket(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	// DB says RESOLVED, but the KV publish never landed — the bucket
+	// still carries ACTIVE. The admin must see ACTIVE.
+	outcome := OutcomeYes
+	seed := repo.putMarket(&Market{
+		Question: "Q?", Status: StatusResolved, Outcome: &outcome,
+		TokenIDYes: "y", TokenIDNo: "n",
+	})
+	pub := &fakePublisher{liveStatus: map[string]string{seed.ID: "ACTIVE"}}
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodGet, "/admin/markets/"+seed.ID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var got marketResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != "ACTIVE" {
+		t.Errorf("status = %q, want ACTIVE (bucket state, not DB state)", got.Status)
+	}
+}
+
+func TestHandler_GetMarket_NoBucketEntryShowsUnpublished(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{} // no liveStatus entries
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodGet, "/admin/markets/"+seed.ID, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got marketResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Status != liveStatusUnpublished {
+		t.Errorf("status = %q, want %q", got.Status, liveStatusUnpublished)
+	}
+}
+
+func TestHandler_GetMarket_BucketReadFailureReturns502(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	seed := repo.putMarket(&Market{Question: "Q?", Status: StatusActive, TokenIDYes: "y", TokenIDNo: "n"})
+	pub := &fakePublisher{liveStatusErr: errors.New("KV down")}
+	mux := muxWithPublisher(t, repo, pub)
+
+	rec := doRequest(t, mux, http.MethodGet, "/admin/markets/"+seed.ID, nil)
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+}
+
+// --- idempotent retry after a failed publish ------------------------------
+
+func TestHandler_ResolveEvent_RetrySameOutcomeRepublishes(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	c1 := fixedCondHash("ri1")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	chain.slotCount[common.HexToHash(c1)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("retry-resolve", catID, c1, fixedCondHash("riq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	marketID := created.Markets[0].ID
+
+	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
+	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(0)}
+
+	// First resolve: DB commits, but the publish fails — 502.
+	pub.configErr = errors.New("KV down")
+	resolveBody := []byte(`{"outcomes":{"` + marketID + `":"YES"}}`)
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", resolveBody)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("first resolve status = %d, want 502", rec.Code)
+	}
+	if repo.markets[marketID].Status != StatusResolved {
+		t.Fatalf("market status = %s, want RESOLVED (DB committed before publish)",
+			repo.markets[marketID].Status)
+	}
+
+	// Retry with the same outcome: idempotent no-op in the DB, and the
+	// publishes run again — this is the recovery path for stale KV.
+	pub.configErr = nil
+	pub.configCalls = nil
+	pub.statusCalls = nil
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", resolveBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Errorf("config publishes on retry = %d, want 1", len(pub.configCalls))
+	}
+	if len(pub.statusCalls) != 1 {
+		t.Errorf("status publishes on retry = %d, want 1", len(pub.statusCalls))
+	}
+}
+
+func TestHandler_ResolveEvent_RetryDifferentOutcomeConflicts(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	c1 := fixedCondHash("rd1")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	chain.slotCount[common.HexToHash(c1)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("retry-diff", catID, c1, fixedCondHash("rdq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	marketID := created.Markets[0].ID
+
+	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
+	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(0)}
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve",
+		[]byte(`{"outcomes":{"`+marketID+`":"YES"}}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first resolve: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Declaring NO now contradicts both the stored outcome and the chain
+	// — chain verification rejects it first with a 422.
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve",
+		[]byte(`{"outcomes":{"`+marketID+`":"NO"}}`))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("conflicting retry status = %d, want 422", rec.Code)
+	}
+}
+
+func TestHandler_VoidEvent_RetryRepublishes(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	c1 := fixedCondHash("rv1")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	chain.slotCount[common.HexToHash(c1)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("retry-void", catID, c1, fixedCondHash("rvq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	marketID := created.Markets[0].ID
+
+	chain.denominator[common.HexToHash(c1)] = mkBigInt(2)
+	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(1)}
+
+	voidBody := []byte(`{"market_ids":["` + marketID + `"]}`)
+	pub.configErr = errors.New("KV down")
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", voidBody)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("first void status = %d, want 502", rec.Code)
+	}
+
+	pub.configErr = nil
+	pub.configCalls = nil
+	pub.statusCalls = nil
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", voidBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 || len(pub.statusCalls) != 1 {
+		t.Errorf("publishes on retry: config=%d status=%d, want 1/1",
+			len(pub.configCalls), len(pub.statusCalls))
+	}
+}
+
+// --- create-time ID validation --------------------------------------------
+
+func TestHandler_CreateEvent_Binary_MalformedConditionID(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	mux := muxWithChain(t, repo, &fakePublisher{}, newFakeChainReader())
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("badcond", catID, "0xnot-valid-hex", fixedCondHash("q")))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("condition_id")) {
+		t.Errorf("error should name condition_id, got: %q", rec.Body.String())
+	}
+}
+
+func TestHandler_CreateEvent_Binary_MalformedQuestionID(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	mux := muxWithChain(t, repo, &fakePublisher{}, newFakeChainReader())
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("badq", catID, fixedCondHash("c"), "0x1234"))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("question_id")) {
+		t.Errorf("error should name question_id, got: %q", rec.Body.String())
+	}
+}
+
+func TestHandler_CreateEvent_NegRisk_QuestionIDFromDifferentMarket(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	mux := muxWithChain(t, repo, &fakePublisher{}, newFakeChainReader())
+
+	negRiskID := negRiskMarketIDHex("market-one")
+	foreignID := negRiskMarketIDHex("market-two")
+	body := []byte(`{
+		"slug":"neg-mismatch","title":"T","description":"D",
+		"category_id":"` + catID + `",
+		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
+		"neg_risk_market_id":"` + negRiskID + `",
+		"markets":[
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(negRiskID, 0) + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(foreignID, 1) + `","tick_size":"0.01","min_size":5}
+		]
+	}`)
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("does not belong to neg_risk_market_id")) {
+		t.Errorf("error should explain the mismatch, got: %q", rec.Body.String())
+	}
+}
+
+func TestHandler_CreateEvent_NegRisk_MarketIDWithNonZeroFinalByte(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	mux := muxWithChain(t, repo, &fakePublisher{}, newFakeChainReader())
+
+	// A questionId pasted where the marketId belongs: final byte non-zero.
+	questionIDAsMarketID := negRiskQuestionID(negRiskMarketIDHex("market-one"), 1)
+	body := []byte(`{
+		"slug":"neg-badmid","title":"T","description":"D",
+		"category_id":"` + catID + `",
+		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
+		"neg_risk_market_id":"` + questionIDAsMarketID + `",
+		"markets":[
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(questionIDAsMarketID, 0) + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(questionIDAsMarketID, 1) + `","tick_size":"0.01","min_size":5}
+		]
+	}`)
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("final byte must be zero")) {
+		t.Errorf("error should explain the marketId shape, got: %q", rec.Body.String())
 	}
 }

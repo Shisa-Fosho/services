@@ -88,9 +88,19 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 				fmt.Sprintf("markets[%d].condition_id is required", idx))
 			return
 		}
+		if !isHexHash(marketReq.ConditionID) {
+			httputil.ErrorResponse(w, http.StatusBadRequest,
+				fmt.Sprintf("markets[%d].condition_id must be a 0x-prefixed 32-byte hex string", idx))
+			return
+		}
 		if marketReq.QuestionID == "" {
 			httputil.ErrorResponse(w, http.StatusBadRequest,
 				fmt.Sprintf("markets[%d].question_id is required", idx))
+			return
+		}
+		if !isHexHash(marketReq.QuestionID) {
+			httputil.ErrorResponse(w, http.StatusBadRequest,
+				fmt.Sprintf("markets[%d].question_id must be a 0x-prefixed 32-byte hex string", idx))
 			return
 		}
 		tickSize, ok := ParseTickSize(marketReq.TickSize)
@@ -144,6 +154,20 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		httputil.ErrorResponse(w, http.StatusBadRequest, "neg_risk_market_id is required")
 		return
 	}
+	if !isHexHash(req.NegRiskMarketID) {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"neg_risk_market_id must be a 0x-prefixed 32-byte hex string")
+		return
+	}
+	adapterMarketID := common.HexToHash(req.NegRiskMarketID)
+	// Per NegRiskIdLib (neg-risk-ctf-adapter v2.0.0), MarketIds always have
+	// their final byte zeroed; a non-zero byte means the admin pasted a
+	// questionId where the marketId belongs.
+	if adapterMarketID[31] != 0 {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"neg_risk_market_id is not a NegRisk marketId (final byte must be zero)")
+		return
+	}
 	if len(req.Markets) < 2 {
 		httputil.ErrorResponse(w, http.StatusBadRequest, "NEG_RISK events require at least 2 markets")
 		return
@@ -154,6 +178,21 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		if marketReq.QuestionID == "" {
 			httputil.ErrorResponse(w, http.StatusBadRequest,
 				fmt.Sprintf("markets[%d].question_id is required", idx))
+			return
+		}
+		if !isHexHash(marketReq.QuestionID) {
+			httputil.ErrorResponse(w, http.StatusBadRequest,
+				fmt.Sprintf("markets[%d].question_id must be a 0x-prefixed 32-byte hex string", idx))
+			return
+		}
+		// QuestionIds share their first 31 bytes with the parent MarketId;
+		// the final byte is the question index (NegRiskIdLib). Reject
+		// questions that belong to a different adapter market — otherwise
+		// the stored grouping is wrong and the resolve-time getDetermined
+		// check would query the wrong market.
+		if negRiskMarketIDOf(common.HexToHash(marketReq.QuestionID)) != adapterMarketID {
+			httputil.ErrorResponse(w, http.StatusBadRequest,
+				fmt.Sprintf("markets[%d].question_id does not belong to neg_risk_market_id (first 31 bytes must match)", idx))
 			return
 		}
 		tickSize, ok := ParseTickSize(marketReq.TickSize)
@@ -214,6 +253,34 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 	}
 
 	handler.finishCreate(r.Context(), w, event, markets)
+}
+
+// isHexHash reports whether value is a 0x-prefixed 32-byte hex string —
+// the wire format for conditionIds, questionIds, and adapter marketIds.
+// common.HexToHash silently zero-fills malformed input, so reject bad
+// values at the boundary where an accurate error is still possible.
+func isHexHash(value string) bool {
+	if len(value) != 66 || value[0] != '0' || (value[1] != 'x' && value[1] != 'X') {
+		return false
+	}
+	for _, char := range value[2:] {
+		switch {
+		case char >= '0' && char <= '9':
+		case char >= 'a' && char <= 'f':
+		case char >= 'A' && char <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// negRiskMarketIDOf returns the adapter MarketId a questionId belongs to:
+// the questionId with its final byte (the question index) zeroed, per
+// NegRiskIdLib.getMarketId in neg-risk-ctf-adapter v2.0.0.
+func negRiskMarketIDOf(questionID common.Hash) common.Hash {
+	questionID[31] = 0
+	return questionID
 }
 
 // verifyOutcomeSlotCounts confirms each market's conditionId has been
