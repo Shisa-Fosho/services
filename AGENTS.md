@@ -102,6 +102,7 @@ make down            # Stop and clean up
 make build           # Compile all services
 make test            # Run unit tests
 make test-integration # Run integration tests (requires stack running)
+make test-onchain    # Run on-chain tests against an anvil fork of Polygon (requires Docker)
 make lint            # Run golangci-lint + go vet
 make proto           # Generate protobuf code (buf generate)
 make fmt             # Format code (gofmt + goimports)
@@ -129,7 +130,8 @@ internal/
   │   ├── envutil/          # Env-var helpers (Get/MustGet) used by service main funcs
   │   ├── httputil/         # JSON helpers, HTTP middleware (RequestID, Logging, Recovery)
   │   ├── ratelimit/        # Rate limiting utilities
-  │   └── eth/              # Ethereum utilities (address validation, Safe address derivation)
+  │   └── eth/              # Ethereum utilities (address validation, Safe derivation, contract readers)
+  │       └── ethtest/      # Test-only anvil-fork write helpers (impersonation; no keys/signers)
   ├── platform/             # Platform service domain
   │   ├── auth/             #   ├─ session-auth handlers + JWT, SIWE, JWT middleware
   │   ├── market/           #   ├─ market domain
@@ -154,7 +156,8 @@ deploy/                     # Infrastructure configs
   ├── grafana/
   └── nats.conf
 docs/                       # Documentation
-  └── architecture.md
+  ├── architecture.md
+  └── testing-onchain.md    # Forked-Polygon on-chain test harness (make test-onchain)
 ```
 
 ## Git Conventions

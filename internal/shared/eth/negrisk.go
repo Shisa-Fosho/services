@@ -3,6 +3,7 @@ package eth
 import (
 	"context"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -26,6 +27,13 @@ type NegRiskReader interface {
 	// in the given NegRiskAdapter market has been resolved YES —
 	// the adapter's mutual-exclusivity flag.
 	MarketDetermined(ctx context.Context, marketID common.Hash) (bool, error)
+
+	// PositionIDs returns the ERC1155 position ids (YES, NO) the
+	// adapter derives for a questionId: getPositionId(questionId,
+	// true) is YES, false is NO (NegRiskAdapter v2.0.0). The adapter
+	// derives against its wrapped collateral internally, so no
+	// collateral parameter is needed.
+	PositionIDs(ctx context.Context, questionID common.Hash) (yes, no *big.Int, err error)
 }
 
 // NegRiskReaderClient implements NegRiskReader against a live RPC
@@ -75,4 +83,21 @@ func (reader *NegRiskReaderClient) MarketDetermined(ctx context.Context, marketI
 		return false, fmt.Errorf("calling NegRiskAdapter.getDetermined: %w", err)
 	}
 	return value, nil
+}
+
+// PositionIDs reads NegRiskAdapter.getPositionId(questionId, outcome)
+// for outcome = true (YES) and false (NO).
+func (reader *NegRiskReaderClient) PositionIDs(ctx context.Context, questionID common.Hash) (*big.Int, *big.Int, error) {
+	if reader.contract == nil {
+		return nil, nil, ErrNegRiskDisabled
+	}
+	yes, err := reader.contract.GetPositionId(&bind.CallOpts{Context: ctx}, questionID, true)
+	if err != nil {
+		return nil, nil, fmt.Errorf("calling NegRiskAdapter.getPositionId(yes): %w", err)
+	}
+	no, err := reader.contract.GetPositionId(&bind.CallOpts{Context: ctx}, questionID, false)
+	if err != nil {
+		return nil, nil, fmt.Errorf("calling NegRiskAdapter.getPositionId(no): %w", err)
+	}
+	return yes, no, nil
 }

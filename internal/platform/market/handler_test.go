@@ -516,23 +516,29 @@ func (p *fakePublisher) LiveStatus(marketID string) (string, bool, error) {
 	return status, ok, nil
 }
 
-// fakeChainReader is an in-memory double satisfying both ctReader and
-// negRiskReader. Tests pre-load expected returns keyed by the relevant
-// input. One struct serves both interfaces because Go's structural
-// typing makes the split free; production wires two separate concrete
-// readers in main.go.
+// fakeChainReader is an in-memory double satisfying eth.CTReader, with
+// the negRisk read surface carried alongside (see fakeNegRiskReader —
+// both interfaces declare PositionIDs with different signatures, so one
+// struct can no longer serve both directly). Tests pre-load expected
+// returns keyed by the relevant input; position ids fall back to the
+// deterministic fakeTokenPair derivation so request bodies can compute
+// matching values via tokenIDsJSON.
 type fakeChainReader struct {
-	slotCount         map[common.Hash]uint64
-	denominator       map[common.Hash]*big.Int
-	numerators        map[common.Hash][]*big.Int
-	negRiskCondIDs    map[common.Hash]common.Hash
-	negRiskDetermined map[common.Hash]bool
+	slotCount          map[common.Hash]uint64
+	denominator        map[common.Hash]*big.Int
+	numerators         map[common.Hash][]*big.Int
+	ctPositionIDs      map[common.Hash][2]*big.Int
+	negRiskCondIDs     map[common.Hash]common.Hash
+	negRiskDetermined  map[common.Hash]bool
+	negRiskPositionIDs map[common.Hash][2]*big.Int
 
 	slotCountErr         map[common.Hash]error
 	denominatorErr       map[common.Hash]error
 	numeratorErr         map[common.Hash]error
+	ctPositionIDErr      map[common.Hash]error
 	negRiskCondIDErr     map[common.Hash]error
 	negRiskDeterminedErr map[common.Hash]error
+	negRiskPositionIDErr map[common.Hash]error
 }
 
 func newFakeChainReader() *fakeChainReader {
@@ -540,14 +546,36 @@ func newFakeChainReader() *fakeChainReader {
 		slotCount:            map[common.Hash]uint64{},
 		denominator:          map[common.Hash]*big.Int{},
 		numerators:           map[common.Hash][]*big.Int{},
+		ctPositionIDs:        map[common.Hash][2]*big.Int{},
 		negRiskCondIDs:       map[common.Hash]common.Hash{},
 		negRiskDetermined:    map[common.Hash]bool{},
+		negRiskPositionIDs:   map[common.Hash][2]*big.Int{},
 		slotCountErr:         map[common.Hash]error{},
 		denominatorErr:       map[common.Hash]error{},
 		numeratorErr:         map[common.Hash]error{},
+		ctPositionIDErr:      map[common.Hash]error{},
 		negRiskCondIDErr:     map[common.Hash]error{},
 		negRiskDeterminedErr: map[common.Hash]error{},
+		negRiskPositionIDErr: map[common.Hash]error{},
 	}
+}
+
+// fakeTokenPair is the deterministic (YES, NO) position id derivation the
+// fake readers fall back to when no override is loaded: seeded by the
+// conditionId for the CT reader, the questionId for the NegRisk reader.
+// seed[1:] keeps the values comfortably inside 256 bits.
+func fakeTokenPair(seed common.Hash) (*big.Int, *big.Int) {
+	yes := new(big.Int).Lsh(new(big.Int).SetBytes(seed[1:]), 1)
+	no := new(big.Int).Add(yes, big.NewInt(1))
+	return yes, no
+}
+
+// tokenIDsJSON renders the token_id_yes/token_id_no body fields matching
+// fakeTokenPair for the given seed hex (conditionId for BINARY markets,
+// questionId for NEG_RISK markets).
+func tokenIDsJSON(seedHex string) string {
+	yes, no := fakeTokenPair(common.HexToHash(seedHex))
+	return `"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `"`
 }
 
 func (f *fakeChainReader) OutcomeSlotCount(_ context.Context, conditionID common.Hash) (uint64, error) {
@@ -590,6 +618,36 @@ func (f *fakeChainReader) PayoutNumerators(_ context.Context, conditionID common
 	return out, nil
 }
 
+// PositionIDs satisfies eth.CTReader (binary token derivation, keyed by
+// conditionId; the collateral address is irrelevant to the fake).
+func (f *fakeChainReader) PositionIDs(_ context.Context, _ common.Address, conditionID common.Hash) (*big.Int, *big.Int, error) {
+	if err, ok := f.ctPositionIDErr[conditionID]; ok {
+		return nil, nil, err
+	}
+	if pair, ok := f.ctPositionIDs[conditionID]; ok {
+		return pair[0], pair[1], nil
+	}
+	yes, no := fakeTokenPair(conditionID)
+	return yes, no, nil
+}
+
+// fakeNegRiskReader adapts fakeChainReader to eth.NegRiskReader. Its
+// PositionIDs (keyed by questionId) shadows the embedded CT-signature
+// method — the two interfaces diverged when token derivation was added.
+type fakeNegRiskReader struct{ *fakeChainReader }
+
+// PositionIDs satisfies eth.NegRiskReader.
+func (f fakeNegRiskReader) PositionIDs(_ context.Context, questionID common.Hash) (*big.Int, *big.Int, error) {
+	if err, ok := f.negRiskPositionIDErr[questionID]; ok {
+		return nil, nil, err
+	}
+	if pair, ok := f.negRiskPositionIDs[questionID]; ok {
+		return pair[0], pair[1], nil
+	}
+	yes, no := fakeTokenPair(questionID)
+	return yes, no, nil
+}
+
 // ConditionID satisfies negRiskReader.
 func (f *fakeChainReader) ConditionID(_ context.Context, questionID common.Hash) (common.Hash, error) {
 	if err, ok := f.negRiskCondIDErr[questionID]; ok {
@@ -606,11 +664,16 @@ func (f *fakeChainReader) MarketDetermined(_ context.Context, marketID common.Ha
 	return f.negRiskDetermined[marketID], nil
 }
 
+// testCollateral is the collateral token address handlers are
+// constructed with in tests — an arbitrary fixed value, since the fake
+// CT reader ignores it when deriving position ids.
+var testCollateral = common.HexToAddress("0x00000000000000000000000000000000000000CC")
+
 func newHandlerForTest(t *testing.T, repo Repository) *Handler {
 	t.Helper()
 	logger := zap.NewNop()
 	chain := newFakeChainReader()
-	return NewHandler(repo, &fakePublisher{}, chain, chain, logger)
+	return NewHandler(repo, &fakePublisher{}, chain, fakeNegRiskReader{chain}, testCollateral, logger)
 }
 
 // newHandlerWithPublisher is like newHandlerForTest but lets the caller
@@ -619,7 +682,7 @@ func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configStor
 	t.Helper()
 	logger := zap.NewNop()
 	chain := newFakeChainReader()
-	return NewHandler(repo, publisher, chain, chain, logger)
+	return NewHandler(repo, publisher, chain, fakeNegRiskReader{chain}, testCollateral, logger)
 }
 
 // newHandlerWithChain injects both a publisher and a chain reader,
@@ -627,7 +690,7 @@ func newHandlerWithPublisher(t *testing.T, repo Repository, publisher configStor
 func newHandlerWithChain(t *testing.T, repo Repository, publisher configStore, chain *fakeChainReader) *Handler {
 	t.Helper()
 	logger := zap.NewNop()
-	return NewHandler(repo, publisher, chain, chain, logger)
+	return NewHandler(repo, publisher, chain, fakeNegRiskReader{chain}, testCollateral, logger)
 }
 
 // passThroughAdmin is an "admin middleware" stand-in for handler tests:
@@ -1487,7 +1550,7 @@ func binaryEventBody(slug, catID, condHex, questionHex string) []byte {
 		"markets":[{
 			"slug":"` + slug + `-m1","question":"Q?",
 			"outcome_yes_label":"Yes","outcome_no_label":"No",
-			"token_id_yes":"ty","token_id_no":"tn",
+			` + tokenIDsJSON(condHex) + `,
 			"condition_id":"` + condHex + `","question_id":"` + questionHex + `",
 			"tick_size":"0.01","min_size":5
 		}]
@@ -1543,7 +1606,7 @@ func TestHandler_CreateEvent_Binary_MissingQuestionID(t *testing.T) {
 		"markets":[{
 			"slug":"e1-m1","question":"Q?",
 			"outcome_yes_label":"Yes","outcome_no_label":"No",
-			"token_id_yes":"ty","token_id_no":"tn",
+			` + tokenIDsJSON(fixedCondHash("c")) + `,
 			"condition_id":"` + fixedCondHash("c") + `",
 			"tick_size":"0.01","min_size":5
 		}]
@@ -1626,9 +1689,9 @@ func TestHandler_CreateEvent_Binary_MultiMarket(t *testing.T) {
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"markets":[
-			{"slug":"m1","question":"Q1?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty1","token_id_no":"tn1","condition_id":"` + c1 + `","question_id":"` + fixedCondHash("q1") + `","tick_size":"0.01","min_size":5},
-			{"slug":"m2","question":"Q2?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty2","token_id_no":"tn2","condition_id":"` + c2 + `","question_id":"` + fixedCondHash("q2") + `","tick_size":"0.01","min_size":5},
-			{"slug":"m3","question":"Q3?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty3","token_id_no":"tn3","condition_id":"` + c3 + `","question_id":"` + fixedCondHash("q3") + `","tick_size":"0.01","min_size":5}
+			{"slug":"m1","question":"Q1?","outcome_yes_label":"Yes","outcome_no_label":"No",` + tokenIDsJSON(c1) + `,"condition_id":"` + c1 + `","question_id":"` + fixedCondHash("q1") + `","tick_size":"0.01","min_size":5},
+			{"slug":"m2","question":"Q2?","outcome_yes_label":"Yes","outcome_no_label":"No",` + tokenIDsJSON(c2) + `,"condition_id":"` + c2 + `","question_id":"` + fixedCondHash("q2") + `","tick_size":"0.01","min_size":5},
+			{"slug":"m3","question":"Q3?","outcome_yes_label":"Yes","outcome_no_label":"No",` + tokenIDsJSON(c3) + `,"condition_id":"` + c3 + `","question_id":"` + fixedCondHash("q3") + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary", body)
@@ -1637,6 +1700,98 @@ func TestHandler_CreateEvent_Binary_MultiMarket(t *testing.T) {
 	}
 	if len(pub.configCalls) != 3 {
 		t.Errorf("PublishMarketConfig calls = %d, want 3", len(pub.configCalls))
+	}
+}
+
+// binaryEventBodyWithTokens is binaryEventBody with caller-controlled
+// token ids, for exercising the token verification paths.
+func binaryEventBodyWithTokens(slug, catID, condHex, questionHex, tokenYes, tokenNo string) []byte {
+	return []byte(`{
+		"slug":"` + slug + `","title":"T","description":"D",
+		"category_id":"` + catID + `",
+		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
+		"markets":[{
+			"slug":"` + slug + `-m1","question":"Q?",
+			"outcome_yes_label":"Yes","outcome_no_label":"No",
+			"token_id_yes":"` + tokenYes + `","token_id_no":"` + tokenNo + `",
+			"condition_id":"` + condHex + `","question_id":"` + questionHex + `",
+			"tick_size":"0.01","min_size":5
+		}]
+	}`)
+}
+
+func TestHandler_CreateEvent_Binary_TokenIDMismatch(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	chain := newFakeChainReader()
+	cond := fixedCondHash("tok-mismatch")
+	chain.slotCount[common.HexToHash(cond)] = 2
+	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
+
+	// Valid decimal token ids that don't match the fake derivation.
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBodyWithTokens("tok-mismatch", catID, cond, fixedCondHash("q"), "12345", "67890"))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_CreateEvent_Binary_TokenIDSwapped(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	chain := newFakeChainReader()
+	cond := fixedCondHash("tok-swap")
+	chain.slotCount[common.HexToHash(cond)] = 2
+	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
+
+	// YES and NO transposed — must be rejected or resolutions pay the
+	// wrong side.
+	yes, no := fakeTokenPair(common.HexToHash(cond))
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBodyWithTokens("tok-swap", catID, cond, fixedCondHash("q"), no.String(), yes.String()))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_CreateEvent_Binary_TokenIDMalformed(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	chain := newFakeChainReader()
+	cond := fixedCondHash("tok-bad")
+	chain.slotCount[common.HexToHash(cond)] = 2
+	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
+
+	for _, tc := range []struct{ name, yes, no string }{
+		{"non-decimal", "0xabc", "123"},
+		{"empty", "", "123"},
+		{"equal", "123", "123"},
+	} {
+		rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+			binaryEventBodyWithTokens("tok-bad-"+tc.name, catID, cond, fixedCondHash("q"), tc.yes, tc.no))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d body=%q, want 400", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestHandler_CreateEvent_Binary_TokenIDChainError(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	chain := newFakeChainReader()
+	cond := fixedCondHash("tok-err")
+	chain.slotCount[common.HexToHash(cond)] = 2
+	chain.ctPositionIDErr[common.HexToHash(cond)] = errors.New("rpc down")
+	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("tok-err", catID, cond, fixedCondHash("q")))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d body=%q, want 502", rec.Code, rec.Body.String())
 	}
 }
 
@@ -1665,8 +1820,8 @@ func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negRiskID + `",
 		"markets":[
-			{"slug":"alice","question":"Will Alice win?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty1","token_id_no":"tn1","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"bob","question":"Will Bob win?","outcome_yes_label":"Yes","outcome_no_label":"No","token_id_yes":"ty2","token_id_no":"tn2","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
+			{"slug":"alice","question":"Will Alice win?","outcome_yes_label":"Yes","outcome_no_label":"No",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
+			{"slug":"bob","question":"Will Bob win?","outcome_yes_label":"Yes","outcome_no_label":"No",` + tokenIDsJSON(q2) + `,"question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -1685,6 +1840,40 @@ func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
 	}
 }
 
+func TestHandler_CreateEvent_NegRisk_TokenIDMismatch(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "x")
+	chain := newFakeChainReader()
+	negRiskID := negRiskMarketIDHex("neg-tok")
+	q1 := negRiskQuestionID(negRiskID, 0)
+	q2 := negRiskQuestionID(negRiskID, 1)
+	c1 := common.HexToHash(fixedCondHash("nt1"))
+	c2 := common.HexToHash(fixedCondHash("nt2"))
+	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
+	chain.negRiskCondIDs[common.HexToHash(q2)] = c2
+	chain.slotCount[c1] = 2
+	chain.slotCount[c2] = 2
+	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
+
+	// Market b carries decimal token ids that don't match the adapter
+	// derivation for q2.
+	body := []byte(`{
+		"slug":"neg-tok","title":"T","description":"D",
+		"category_id":"` + catID + `",
+		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
+		"neg_risk_market_id":"` + negRiskID + `",
+		"markets":[
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"111","token_id_no":"222","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
+		]
+	}`)
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandler_CreateEvent_NegRisk_MissingMarketID(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
@@ -1698,8 +1887,8 @@ func TestHandler_CreateEvent_NegRisk_MissingMarketID(t *testing.T) {
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + fixedCondHash("b") + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(fixedCondHash("a")) + `,"question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(fixedCondHash("b")) + `,"question_id":"` + fixedCondHash("b") + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -1722,7 +1911,7 @@ func TestHandler_CreateEvent_NegRisk_SingleMarket(t *testing.T) {
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + fixedCondHash("m") + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(fixedCondHash("a")) + `,"question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -1753,8 +1942,8 @@ func TestHandler_ResolveEvent_Partial(t *testing.T) {
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"markets":[
-			{"slug":"r-m1","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y1","token_id_no":"n1","condition_id":"` + c1 + `","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"r-m2","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y2","token_id_no":"n2","condition_id":"` + c2 + `","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
+			{"slug":"r-m1","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(c1) + `,"condition_id":"` + c1 + `","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
+			{"slug":"r-m2","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(c2) + `,"condition_id":"` + c2 + `","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary", createBody)
@@ -1896,8 +2085,8 @@ func TestHandler_ResolveEvent_NegRiskFriendlyError(t *testing.T) {
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negID + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q2) + `,"question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -2045,8 +2234,8 @@ func TestHandler_VoidEvent_NegRisk_AlwaysRejected(t *testing.T) {
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negRiskID + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q2) + `,"question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -2369,8 +2558,8 @@ func TestHandler_CreateEvent_NegRisk_QuestionIDFromDifferentMarket(t *testing.T)
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negRiskID + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(negRiskID, 0) + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(foreignID, 1) + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(negRiskID, 0)) + `,"question_id":"` + negRiskQuestionID(negRiskID, 0) + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(foreignID, 1)) + `,"question_id":"` + negRiskQuestionID(foreignID, 1) + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
@@ -2396,8 +2585,8 @@ func TestHandler_CreateEvent_NegRisk_MarketIDWithNonZeroFinalByte(t *testing.T) 
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + questionIDAsMarketID + `",
 		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(questionIDAsMarketID, 0) + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"y","token_id_no":"n","question_id":"` + negRiskQuestionID(questionIDAsMarketID, 1) + `","tick_size":"0.01","min_size":5}
+			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(questionIDAsMarketID, 0)) + `,"question_id":"` + negRiskQuestionID(questionIDAsMarketID, 0) + `","tick_size":"0.01","min_size":5},
+			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(questionIDAsMarketID, 1)) + `,"question_id":"` + negRiskQuestionID(questionIDAsMarketID, 1) + `","tick_size":"0.01","min_size":5}
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
