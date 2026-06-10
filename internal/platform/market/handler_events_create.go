@@ -319,11 +319,14 @@ func validTokenIDs(w http.ResponseWriter, idx int, tokenIDYes, tokenIDNo string)
 	return true
 }
 
-// parseTokenID parses a decimal uint256 token id, returning nil when the
-// string is empty, non-decimal, or exceeds 256 bits.
+// parseTokenID parses a canonical decimal uint256 token id, returning
+// nil when the string is empty, non-decimal, exceeds 256 bits, or is
+// not the canonical rendering (leading zeros, "+" sign) — the stored
+// string is matched against token ids elsewhere, so only one rendering
+// per value may pass.
 func parseTokenID(value string) *big.Int {
 	parsed, ok := new(big.Int).SetString(value, 10)
-	if !ok || parsed.Sign() < 0 || parsed.BitLen() > 256 {
+	if !ok || parsed.Sign() < 0 || parsed.BitLen() > 256 || parsed.String() != value {
 		return nil
 	}
 	return parsed

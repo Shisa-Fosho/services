@@ -1769,6 +1769,8 @@ func TestHandler_CreateEvent_Binary_TokenIDMalformed(t *testing.T) {
 		{"non-decimal", "0xabc", "123"},
 		{"empty", "", "123"},
 		{"equal", "123", "123"},
+		{"leading-zero", "0123", "456"},
+		{"plus-sign", "+123", "456"},
 	} {
 		rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 			binaryEventBodyWithTokens("tok-bad-"+tc.name, catID, cond, fixedCondHash("q"), tc.yes, tc.no))
