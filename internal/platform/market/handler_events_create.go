@@ -45,7 +45,7 @@ type createBinaryMarketSubobject struct {
 
 // createNegRiskEventRequest is the POST /admin/events/neg-risk body. The
 // event-level neg_risk_market_id is required, and each market supplies
-// only question_id â€” condition_id is derived server-side from the
+// only question_id — condition_id is derived server-side from the
 // NegRiskAdapter so the admin can't supply an inconsistent value.
 type createNegRiskEventRequest struct {
 	Slug            string                         `json:"slug"`
@@ -194,7 +194,7 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		}
 		// QuestionIds share their first 31 bytes with the parent MarketId;
 		// the final byte is the question index (NegRiskIdLib). Reject
-		// questions that belong to a different adapter market â€” otherwise
+		// questions that belong to a different adapter market — otherwise
 		// the stored grouping is wrong and the resolve-time getDetermined
 		// check would query the wrong market.
 		if negRiskMarketIDOf(common.HexToHash(marketReq.QuestionID)) != adapterMarketID {
@@ -268,7 +268,7 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 	handler.finishCreate(r.Context(), w, event, markets)
 }
 
-// isHexHash reports whether value is a 0x-prefixed 32-byte hex string â€”
+// isHexHash reports whether value is a 0x-prefixed 32-byte hex string —
 // the wire format for conditionIds, questionIds, and adapter marketIds.
 // common.HexToHash silently zero-fills malformed input, so reject bad
 // values at the boundary where an accurate error is still possible.
@@ -332,7 +332,7 @@ func parseTokenID(value string) *big.Int {
 // verifyBinaryTokenIDs confirms each market's token id pair matches the
 // on-chain derivation for its conditionId under the configured collateral
 // token. A mismatch means the admin pasted ids that don't correspond to
-// the condition â€” orders would trade tokens settlement can't redeem.
+// the condition — orders would trade tokens settlement can't redeem.
 // Writes the response and returns false on any failure.
 func (handler *Handler) verifyBinaryTokenIDs(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
 	for idx, market := range markets {
@@ -411,7 +411,7 @@ func (handler *Handler) verifyOutcomeSlotCounts(ctx context.Context, w http.Resp
 }
 
 // finishCreate persists the event + markets and publishes config to KV.
-// No Core NATS publish on create â€” status didn't change from a client's
+// No Core NATS publish on create — status didn't change from a client's
 // perspective; clients refresh listings instead.
 func (handler *Handler) finishCreate(ctx context.Context, w http.ResponseWriter, event *Event, markets []*Market) {
 	createdEvent, createdMarkets, err := handler.repo.CreateEventWithMarkets(ctx, event, markets)
