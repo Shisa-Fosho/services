@@ -217,7 +217,8 @@ func run() error {
 	}
 	marketRepo := market.NewPGRepository(pool)
 	marketPublisher := market.NewPublisher(natsClient, marketConfigKV, logger)
-	marketHandler := market.NewHandler(marketRepo, marketPublisher, ctReader, negRiskReader, logger)
+	collateralAddress := common.HexToAddress(envutil.MustGet("COLLATERAL_TOKEN_ADDRESS"))
+	marketHandler := market.NewHandler(marketRepo, marketPublisher, ctReader, negRiskReader, collateralAddress, logger)
 	marketHandler.RegisterAdminRoutes(mux, adminMiddleware)
 
 	// Middleware stack (outermost first):

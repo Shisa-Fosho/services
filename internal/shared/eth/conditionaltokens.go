@@ -33,6 +33,15 @@ type CTReader interface {
 	// the array as an indexed getter, so this method makes slotCount
 	// RPC calls — fine for the binary (N=2) hot path.
 	PayoutNumerators(ctx context.Context, conditionID common.Hash, slotCount uint64) ([]*big.Int, error)
+
+	// PositionIDs returns the ERC1155 position ids (YES, NO) for a
+	// binary condition under the given collateral token: per CTHelpers,
+	// positionId = getPositionId(collateral, getCollectionId(0,
+	// conditionId, indexSet)) with indexSet 1 (0b01) = YES and 2
+	// (0b10) = NO. getCollectionId is a contract call (view, EC-point
+	// hashing), so derivation goes through the chain rather than being
+	// reimplemented here.
+	PositionIDs(ctx context.Context, collateralToken common.Address, conditionID common.Hash) (yes, no *big.Int, err error)
 }
 
 // CTReaderClient implements CTReader against a live RPC endpoint via
@@ -88,4 +97,39 @@ func (reader *CTReaderClient) PayoutNumerators(ctx context.Context, conditionID 
 		out[idx] = value
 	}
 	return out, nil
+}
+
+// PositionIDs derives the (YES, NO) position ids for a binary condition
+// via getCollectionId + getPositionId.
+func (reader *CTReaderClient) PositionIDs(ctx context.Context, collateralToken common.Address, conditionID common.Hash) (*big.Int, *big.Int, error) {
+	yes, err := reader.positionID(ctx, collateralToken, conditionID, indexSetYes)
+	if err != nil {
+		return nil, nil, err
+	}
+	no, err := reader.positionID(ctx, collateralToken, conditionID, indexSetNo)
+	if err != nil {
+		return nil, nil, err
+	}
+	return yes, no, nil
+}
+
+// Index sets for the binary partition [0b01, 0b10] — YES is outcome
+// slot 0, NO is slot 1 (Polymarket convention).
+const (
+	indexSetYes = 1
+	indexSetNo  = 2
+)
+
+func (reader *CTReaderClient) positionID(ctx context.Context, collateralToken common.Address, conditionID common.Hash, indexSet int64) (*big.Int, error) {
+	collectionID, err := reader.contract.GetCollectionId(&bind.CallOpts{Context: ctx},
+		common.Hash{}, conditionID, big.NewInt(indexSet))
+	if err != nil {
+		return nil, fmt.Errorf("calling getCollectionId(indexSet=%d): %w", indexSet, err)
+	}
+	positionID, err := reader.contract.GetPositionId(&bind.CallOpts{Context: ctx},
+		collateralToken, collectionID)
+	if err != nil {
+		return nil, fmt.Errorf("calling getPositionId(indexSet=%d): %w", indexSet, err)
+	}
+	return positionID, nil
 }

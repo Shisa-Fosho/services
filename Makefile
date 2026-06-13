@@ -1,4 +1,4 @@
-.PHONY: help up down test test-integration lint build clean tools proto fmt migrate-up migrate-down gen-contracts
+.PHONY: help up down test test-integration test-onchain lint build clean tools proto fmt migrate-up migrate-down gen-contracts
 
 # Default target
 help:
@@ -7,6 +7,7 @@ help:
 	@echo "  make down             - Stop all services and clean up"
 	@echo "  make test             - Run unit tests"
 	@echo "  make test-integration - Run integration tests (requires stack running)"
+	@echo "  make test-onchain     - Run on-chain tests against an anvil fork of Polygon (requires Docker)"
 	@echo "  make lint             - Run linters"
 	@echo "  make build            - Build all service binaries (regenerates contract bindings first)"
 	@echo "  make gen-contracts    - Regenerate abigen contract bindings from vendored ABIs"
@@ -37,6 +38,41 @@ test: gen-contracts
 test-integration: gen-contracts
 	@echo "Running integration tests..."
 	go test -count=1 -tags=integration ./...
+
+# On-chain integration tests against a fresh anvil fork of Polygon
+# mainnet, where our production contracts live at their deployed
+# addresses (docs/testing-onchain.md). The fork MUST be started fresh
+# per run: public Polygon RPCs only serve state for ~128 recent blocks
+# (~4 min), after which anvil's lazy upstream fetches fail. Override
+# ONCHAIN_FORK_RPC with an archive endpoint (and optionally set
+# ONCHAIN_FORK_BLOCK) for pinned, non-time-sensitive runs.
+ONCHAIN_PORT ?= 8546
+ONCHAIN_FORK_RPC ?= https://polygon-bor-rpc.publicnode.com
+ONCHAIN_CONTAINER = shisa-anvil-onchain
+
+test-onchain: gen-contracts
+	@echo "Starting anvil fork of Polygon on port $(ONCHAIN_PORT)..."
+	@docker rm -f $(ONCHAIN_CONTAINER) >/dev/null 2>&1 || true
+	@docker run -d --name $(ONCHAIN_CONTAINER) -p $(ONCHAIN_PORT):8545 \
+		ghcr.io/foundry-rs/foundry:stable \
+		"anvil --host 0.0.0.0 --fork-url $(ONCHAIN_FORK_RPC) $${ONCHAIN_FORK_BLOCK:+--fork-block-number $$ONCHAIN_FORK_BLOCK}" \
+		>/dev/null
+	@attempts=0; \
+	until docker exec $(ONCHAIN_CONTAINER) cast block-number --rpc-url http://localhost:8545 >/dev/null 2>&1; do \
+		attempts=$$((attempts + 1)); \
+		if [ $$attempts -ge 30 ]; then \
+			echo "anvil fork failed to become ready" >&2; \
+			docker logs $(ONCHAIN_CONTAINER) | tail -20 >&2; \
+			docker rm -f $(ONCHAIN_CONTAINER) >/dev/null 2>&1; \
+			exit 1; \
+		fi; \
+		sleep 2; \
+	done
+	@echo "Fork ready. Running on-chain tests..."
+	@ONCHAIN_RPC_URL=http://127.0.0.1:$(ONCHAIN_PORT) go test -count=1 -tags=onchain -run TestOnchain ./internal/platform/market/ -v; \
+	status=$$?; \
+	docker rm -f $(ONCHAIN_CONTAINER) >/dev/null 2>&1; \
+	exit $$status
 
 # Run linters
 lint: gen-contracts

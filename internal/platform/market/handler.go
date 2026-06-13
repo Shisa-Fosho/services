@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
@@ -26,11 +27,12 @@ type configStore interface {
 // handler_events_resolve.go. This file owns the constructor, the route
 // table, and the cross-resource error helpers.
 type Handler struct {
-	repo      Repository
-	publisher configStore
-	ct        eth.CTReader
-	negRisk   eth.NegRiskReader
-	logger    *zap.Logger
+	repo       Repository
+	publisher  configStore
+	ct         eth.CTReader
+	negRisk    eth.NegRiskReader
+	collateral common.Address
+	logger     *zap.Logger
 }
 
 // NewHandler creates a new market handler. The publisher writes config
@@ -38,9 +40,12 @@ type Handler struct {
 // on Core NATS (consumed by the WebSocket server). The on-chain readers
 // perform verification on create / resolve / void; they are separate
 // interfaces because each contract is independently versioned and
-// independently deployable (NegRisk is optional).
-func NewHandler(repo Repository, publisher configStore, ct eth.CTReader, negRisk eth.NegRiskReader, logger *zap.Logger) *Handler {
-	return &Handler{repo: repo, publisher: publisher, ct: ct, negRisk: negRisk, logger: logger}
+// independently deployable (NegRisk is optional). collateral is the
+// ERC20 (USDC) binary-market positions are collateralized with — used
+// to derive expected token ids at create time; NegRisk derivation uses
+// the adapter's wrapped collateral internally.
+func NewHandler(repo Repository, publisher configStore, ct eth.CTReader, negRisk eth.NegRiskReader, collateral common.Address, logger *zap.Logger) *Handler {
+	return &Handler{repo: repo, publisher: publisher, ct: ct, negRisk: negRisk, collateral: collateral, logger: logger}
 }
 
 // RegisterAdminRoutes wires the admin-only category, event, and market

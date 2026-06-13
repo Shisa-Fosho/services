@@ -95,6 +95,16 @@ Standard fields: `request_id`, `user_address`, `order_id`, `market_id`, `tx_id`,
 - TDD: write tests first, `go build` to verify compilation, `go test` once implementation exists
 - Test naming: `TestFunctionName_Scenario` (e.g., `TestMatchOrders_InsufficientBalance`)
 - **Handler tests required** — every HTTP handler must have handler-level tests using `httptest.NewRecorder` + real mux routing. At minimum: one happy-path and one error-path test per endpoint. Auth-required endpoints must also test missing/invalid JWT.
+- **Assert the failure reason, not just the status code.** When a test exists to prove a *specific* rejection (e.g. "token id mismatch → 422", "payouts not reported → 422"), asserting only `rec.Code == 422` is insufficient: several distinct checks in the same handler return the same status, so the test can pass green on the wrong one — and keep passing silently if the checks are reordered or a regression makes an earlier gate fire. Assert a substring of the error message (or the sentinel via `errors.Is`) that pins *which* check rejected:
+  ```go
+  if rec.Code != http.StatusUnprocessableEntity {
+      t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+  }
+  if !strings.Contains(rec.Body.String(), "does not match on-chain derivation") {
+      t.Errorf("422 but not from the token-id check: %q", rec.Body.String())
+  }
+  ```
+  Two corollaries: (1) **Setup isolation is necessary but not sufficient** — arranging state so only the target check can fire (e.g. seeding a valid slot count so the slot gate passes) is invisible to a future reader, so make the assertion carry the intent. (2) **When the response is deliberately generic** (e.g. all chain-read failures return the same 502 body), the message can't distinguish the cause; rely on setup isolation and add a comment saying so, rather than a misleading body assert. This generalises the happy-path + error-path rule above: an error-path test must assert it failed *for the reason it claims*.
 
 ### Validation
 Domain validators (`ValidateUser`, `ValidateMarket`, `ValidatePosition`, etc.) are package-level functions in `internal/<domain>/validate.go` that return an error wrapping a domain sentinel (e.g., `ErrInvalidPosition`).

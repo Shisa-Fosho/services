@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"time"
 
@@ -103,6 +104,9 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 				fmt.Sprintf("markets[%d].question_id must be a 0x-prefixed 32-byte hex string", idx))
 			return
 		}
+		if !validTokenIDs(w, idx, marketReq.TokenIDYes, marketReq.TokenIDNo) {
+			return
+		}
 		tickSize, ok := ParseTickSize(marketReq.TickSize)
 		if !ok {
 			httputil.ErrorResponse(w, http.StatusBadRequest,
@@ -127,6 +131,9 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 	}
 
 	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+		return
+	}
+	if !handler.verifyBinaryTokenIDs(r.Context(), w, markets) {
 		return
 	}
 
@@ -195,6 +202,9 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 				fmt.Sprintf("markets[%d].question_id does not belong to neg_risk_market_id (first 31 bytes must match)", idx))
 			return
 		}
+		if !validTokenIDs(w, idx, marketReq.TokenIDYes, marketReq.TokenIDNo) {
+			return
+		}
 		tickSize, ok := ParseTickSize(marketReq.TickSize)
 		if !ok {
 			httputil.ErrorResponse(w, http.StatusBadRequest,
@@ -236,6 +246,9 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+		return
+	}
+	if !handler.verifyNegRiskTokenIDs(r.Context(), w, markets) {
 		return
 	}
 
@@ -281,6 +294,98 @@ func isHexHash(value string) bool {
 func negRiskMarketIDOf(questionID common.Hash) common.Hash {
 	questionID[31] = 0
 	return questionID
+}
+
+// validTokenIDs checks the wire format of a market's token id pair:
+// non-empty decimal uint256 strings (the ERC1155 position ids as the
+// Polymarket SDKs render them), and YES distinct from NO. Writes a 400
+// and returns false on violation.
+func validTokenIDs(w http.ResponseWriter, idx int, tokenIDYes, tokenIDNo string) bool {
+	if parseTokenID(tokenIDYes) == nil {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			fmt.Sprintf("markets[%d].token_id_yes must be a decimal uint256 string", idx))
+		return false
+	}
+	if parseTokenID(tokenIDNo) == nil {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			fmt.Sprintf("markets[%d].token_id_no must be a decimal uint256 string", idx))
+		return false
+	}
+	if tokenIDYes == tokenIDNo {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			fmt.Sprintf("markets[%d]: token_id_yes and token_id_no must differ", idx))
+		return false
+	}
+	return true
+}
+
+// parseTokenID parses a canonical decimal uint256 token id, returning
+// nil when the string is empty, non-decimal, exceeds 256 bits, or is
+// not the canonical rendering (leading zeros, "+" sign) — the stored
+// string is matched against token ids elsewhere, so only one rendering
+// per value may pass.
+func parseTokenID(value string) *big.Int {
+	parsed, ok := new(big.Int).SetString(value, 10)
+	if !ok || parsed.Sign() < 0 || parsed.BitLen() > 256 || parsed.String() != value {
+		return nil
+	}
+	return parsed
+}
+
+// verifyBinaryTokenIDs confirms each market's token id pair matches the
+// on-chain derivation for its conditionId under the configured collateral
+// token. A mismatch means the admin pasted ids that don't correspond to
+// the condition — orders would trade tokens settlement can't redeem.
+// Writes the response and returns false on any failure.
+func (handler *Handler) verifyBinaryTokenIDs(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
+	for idx, market := range markets {
+		yes, no, err := handler.ct.PositionIDs(ctx, handler.collateral, common.HexToHash(market.ConditionID))
+		if err != nil {
+			handler.chainError(w, fmt.Sprintf("deriving position ids for markets[%d]", idx), err)
+			return false
+		}
+		if !handler.tokenIDsMatch(w, idx, market, yes, no) {
+			return false
+		}
+	}
+	return true
+}
+
+// verifyNegRiskTokenIDs is the NEG_RISK counterpart of
+// verifyBinaryTokenIDs: the adapter derives position ids from the
+// questionId against its wrapped collateral.
+func (handler *Handler) verifyNegRiskTokenIDs(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
+	for idx, market := range markets {
+		yes, no, err := handler.negRisk.PositionIDs(ctx, common.HexToHash(market.QuestionID))
+		if err != nil {
+			handler.chainError(w, fmt.Sprintf("deriving neg-risk position ids for markets[%d]", idx), err)
+			return false
+		}
+		if !handler.tokenIDsMatch(w, idx, market, yes, no) {
+			return false
+		}
+	}
+	return true
+}
+
+// tokenIDsMatch compares a market's stored token ids against the derived
+// (YES, NO) pair, writing a 422 and returning false on mismatch.
+func (handler *Handler) tokenIDsMatch(w http.ResponseWriter, idx int, market *Market, yes, no *big.Int) bool {
+	storedYes := parseTokenID(market.TokenIDYes)
+	if storedYes == nil || storedYes.Cmp(yes) != 0 {
+		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("markets[%d].token_id_yes does not match on-chain derivation %s: %s",
+				idx, yes.String(), ErrOnChainMismatch.Error()))
+		return false
+	}
+	storedNo := parseTokenID(market.TokenIDNo)
+	if storedNo == nil || storedNo.Cmp(no) != 0 {
+		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("markets[%d].token_id_no does not match on-chain derivation %s: %s",
+				idx, no.String(), ErrOnChainMismatch.Error()))
+		return false
+	}
+	return true
 }
 
 // verifyOutcomeSlotCounts confirms each market's conditionId has been
