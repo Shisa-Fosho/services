@@ -444,4 +444,6 @@ func TestOnchain_ChainReadFailure_Returns502(test *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		test.Errorf("status = %d body=%q, want 502", rec.Code, rec.Body.String())
 	}
+	// Chain-read failures intentionally share one generic 502 body; the isolated
+	// codeless ConditionalTokens setup above pins this rejection to slot-count read.
 }

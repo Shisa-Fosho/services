@@ -87,6 +87,8 @@ func TestLogging_CapturesStatusCode(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", w.Code, http.StatusNotFound)
 	}
+	// Logging is pass-through middleware: the wrapped handler owns the response
+	// body, so there is no failure-reason body for this status-only check to pin.
 }
 
 func TestRecovery_HandlerPanic(t *testing.T) {

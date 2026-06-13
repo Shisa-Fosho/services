@@ -115,6 +115,13 @@ func keysOf(m map[string]interface{}) []string {
 	return out
 }
 
+func assertBodyContains(t *testing.T, recorder *httptest.ResponseRecorder, want string) {
+	t.Helper()
+	if !strings.Contains(recorder.Body.String(), want) {
+		t.Errorf("body = %q, want substring %q", recorder.Body.String(), want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GET /auth/derive-api-key
 // ---------------------------------------------------------------------------
@@ -234,6 +241,7 @@ func TestDeriveAPIKey_MissingHeaders(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
+	assertBodyContains(t, recorder, "POLY_ADDRESS")
 }
 
 func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
@@ -253,6 +261,7 @@ func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
+	assertBodyContains(t, recorder, "signature verification failed")
 }
 
 func TestDeriveAPIKey_Idempotent(t *testing.T) {
@@ -386,6 +395,7 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
+	assertBodyContains(t, recorder, "api key not found")
 }
 
 func TestRevokeAPIKey_MissingField(t *testing.T) {
@@ -408,6 +418,7 @@ func TestRevokeAPIKey_MissingField(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
+	assertBodyContains(t, recorder, "api_key is required")
 }
 
 func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
@@ -427,6 +438,7 @@ func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
+	assertBodyContains(t, recorder, "POLY_API_KEY")
 }
 
 // ---------------------------------------------------------------------------
@@ -517,4 +529,5 @@ func TestListAPIKeys_RejectsJWT(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
+	assertBodyContains(t, recorder, "POLY_API_KEY")
 }
