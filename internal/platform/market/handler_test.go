@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1730,10 +1731,16 @@ func TestHandler_CreateEvent_Binary_TokenIDMismatch(t *testing.T) {
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
 	// Valid decimal token ids that don't match the fake derivation.
+	// The condition is prepared (slot count 2), so the only reachable
+	// 422 is the token check — assert the reason, not just the status,
+	// so this can't pass green on an unrelated 422.
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBodyWithTokens("tok-mismatch", catID, cond, fixedCondHash("q"), "12345", "67890"))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match on-chain derivation") {
+		t.Errorf("422 but not from the token-id check: %q", rec.Body.String())
 	}
 }
 
@@ -1747,12 +1754,16 @@ func TestHandler_CreateEvent_Binary_TokenIDSwapped(t *testing.T) {
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
 	// YES and NO transposed — must be rejected or resolutions pay the
-	// wrong side.
+	// wrong side. The yes slot is checked first, so the mismatch fires
+	// on token_id_yes.
 	yes, no := fakeTokenPair(common.HexToHash(cond))
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBodyWithTokens("tok-swap", catID, cond, fixedCondHash("q"), no.String(), yes.String()))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match on-chain derivation") {
+		t.Errorf("422 but not from the token-id check: %q", rec.Body.String())
 	}
 }
 
@@ -1765,17 +1776,21 @@ func TestHandler_CreateEvent_Binary_TokenIDMalformed(t *testing.T) {
 	chain.slotCount[common.HexToHash(cond)] = 2
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
-	for _, tc := range []struct{ name, yes, no string }{
-		{"non-decimal", "0xabc", "123"},
-		{"empty", "", "123"},
-		{"equal", "123", "123"},
-		{"leading-zero", "0123", "456"},
-		{"plus-sign", "+123", "456"},
+	for _, tc := range []struct{ name, yes, no, wantMsg string }{
+		{"non-decimal", "0xabc", "123", "must be a decimal uint256 string"},
+		{"empty", "", "123", "must be a decimal uint256 string"},
+		{"equal", "123", "123", "must differ"},
+		{"leading-zero", "0123", "456", "must be a decimal uint256 string"},
+		{"plus-sign", "+123", "456", "must be a decimal uint256 string"},
 	} {
 		rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 			binaryEventBodyWithTokens("tok-bad-"+tc.name, catID, cond, fixedCondHash("q"), tc.yes, tc.no))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d body=%q, want 400", tc.name, rec.Code, rec.Body.String())
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), tc.wantMsg) {
+			t.Errorf("%s: 400 but not the token-shape check: got %q, want substring %q", tc.name, rec.Body.String(), tc.wantMsg)
 		}
 	}
 }
@@ -1790,6 +1805,10 @@ func TestHandler_CreateEvent_Binary_TokenIDChainError(t *testing.T) {
 	chain.ctPositionIDErr[common.HexToHash(cond)] = errors.New("rpc down")
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
+	// Slot count is seeded so the slot read succeeds; only PositionIDs
+	// errors, so the 502 originates in the token check. The 502 body is
+	// deliberately generic across all chain reads, so isolation here is
+	// structural (this setup) rather than assertable from the message.
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBody("tok-err", catID, cond, fixedCondHash("q")))
 	if rec.Code != http.StatusBadGateway {
@@ -1859,7 +1878,8 @@ func TestHandler_CreateEvent_NegRisk_TokenIDMismatch(t *testing.T) {
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
 	// Market b carries decimal token ids that don't match the adapter
-	// derivation for q2.
+	// derivation for q2. Market a is correct and both conditions are
+	// prepared, so the only reachable 422 is b's token check.
 	body := []byte(`{
 		"slug":"neg-tok","title":"T","description":"D",
 		"category_id":"` + catID + `",
@@ -1872,7 +1892,10 @@ func TestHandler_CreateEvent_NegRisk_TokenIDMismatch(t *testing.T) {
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match on-chain derivation") {
+		t.Errorf("422 but not from the token-id check: %q", rec.Body.String())
 	}
 }
 

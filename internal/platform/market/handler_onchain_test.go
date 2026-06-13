@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,13 +179,17 @@ func TestOnchain_CreateBinary_TokenIDMismatch(test *testing.T) {
 	env := newOnchainEnv(test)
 	questionID, conditionID := prepareBinaryCondition(test, env)
 
-	// Prepared condition, but token ids that don't match the on-chain
-	// derivation for it.
+	// Prepared condition (slot check passes), but token ids that don't
+	// match the on-chain derivation for it — so the only reachable 422
+	// is the token check. Assert the reason, not just the status.
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBodyWithTokens("oc-tokmis-"+questionID.Hex()[2:10], env.catID,
 			conditionID.Hex(), questionID.Hex(), "12345", "67890"))
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "does not match on-chain derivation") {
+		test.Errorf("422 but not from the token-id check: %q", rec.Body.String())
 	}
 }
 
