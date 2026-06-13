@@ -171,7 +171,10 @@ func TestOnchain_CreateBinary_ConditionNotPrepared(test *testing.T) {
 		binaryEventBodyWithTokens("oc-unprep-"+questionID.Hex()[2:10], env.catID,
 			conditionID.Hex(), questionID.Hex(), "1", "2"))
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "condition not prepared on-chain") {
+		test.Errorf("422 but not from the slot-count check: %q", rec.Body.String())
 	}
 }
 
@@ -222,7 +225,10 @@ func TestOnchain_ResolveBinary_PayoutsNotReported(test *testing.T) {
 	body := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", body)
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "payouts not reported on-chain") {
+		test.Errorf("422 but not from the payouts-reported check: %q", rec.Body.String())
 	}
 }
 
@@ -237,7 +243,10 @@ func TestOnchain_ResolveBinary_DeclaredWinnerContradictsChain(test *testing.T) {
 	body := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", body)
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "on-chain numerators are") {
+		test.Errorf("422 but not from the outcome-match check: %q", rec.Body.String())
 	}
 }
 
@@ -267,7 +276,10 @@ func TestOnchain_VoidBinary_DecisivePayoutsRejected(test *testing.T) {
 
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "void pattern requires equal positive numerators") {
+		test.Errorf("422 but not from the void-pattern check: %q", rec.Body.String())
 	}
 }
 
@@ -397,7 +409,10 @@ func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
 	body = []byte(`{"outcomes":{"` + marketByQuestion[questionIDs[1].Hex()] + `":"YES"}}`)
 	rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)
 	if rec.Code != http.StatusUnprocessableEntity {
-		test.Errorf("second resolve: status = %d body=%q, want 422", rec.Code, rec.Body.String())
+		test.Fatalf("second resolve: status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "can never be reported") {
+		test.Errorf("422 but not the NegRisk-determined message: %q", rec.Body.String())
 	}
 }
 

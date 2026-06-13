@@ -1650,7 +1650,10 @@ func TestHandler_CreateEvent_Binary_OnChainNotPrepared(t *testing.T) {
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBody("notprep", catID, fixedCondHash("c2"), fixedCondHash("q2")))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", rec.Code)
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "condition not prepared on-chain") {
+		t.Errorf("422 but not from the slot-count check: %q", rec.Body.String())
 	}
 }
 
@@ -1667,7 +1670,10 @@ func TestHandler_CreateEvent_Binary_SlotCountMismatch(t *testing.T) {
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
 		binaryEventBody("slot-mismatch", catID, cond, fixedCondHash("q3")))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", rec.Code)
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "outcome slot count") {
+		t.Errorf("422 but not from the slot-count check: %q", rec.Body.String())
 	}
 }
 
@@ -2040,7 +2046,10 @@ func TestHandler_ResolveEvent_OnChainNotResolved(t *testing.T) {
 	resolveBody := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", resolveBody)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", rec.Code)
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "payouts not reported on-chain") {
+		t.Errorf("422 but not from the payouts-reported check: %q", rec.Body.String())
 	}
 }
 
@@ -2069,7 +2078,10 @@ func TestHandler_ResolveEvent_OutcomeMismatch(t *testing.T) {
 	resolveBody := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", resolveBody)
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", rec.Code)
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "on-chain numerators are") {
+		t.Errorf("422 but not from the outcome-match check: %q", rec.Body.String())
 	}
 }
 
@@ -2232,7 +2244,10 @@ func TestHandler_VoidEvent_Binary_UnequalPayouts(t *testing.T) {
 	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void",
 		[]byte(`{"market_ids":["`+created.Markets[0].ID+`"]}`))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422", rec.Code)
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "void pattern requires equal positive numerators") {
+		t.Errorf("422 but not from the void-pattern check: %q", rec.Body.String())
 	}
 }
 
