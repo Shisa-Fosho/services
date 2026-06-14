@@ -14,10 +14,14 @@ COPY . .
 # `make gen-contracts`. Plain `go install` (no @version) builds abigen at the
 # go-ethereum version pinned in go.mod.
 RUN CGO_ENABLED=0 go install github.com/ethereum/go-ethereum/cmd/abigen && \
+    go install github.com/bufbuild/buf/cmd/buf@v1.59.0 && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest && \
+    cd proto && buf generate && cd .. && \
     mkdir -p internal/shared/eth/gen/conditionaltokens internal/shared/eth/gen/negriskadapter && \
     go generate ./internal/shared/eth/...
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app ./cmd/${SERVICE}
+RUN CGO_ENABLED=0 GOOS=linux go build -buildvcs=false -o /app ./cmd/${SERVICE}
 
 FROM alpine:3.21
 
@@ -27,5 +31,8 @@ RUN apk add --no-cache ca-certificates && \
     chmod +x /bin/grpc_health_probe
 
 COPY --from=builder /app /app
+COPY migrations /migrations
+
+WORKDIR /
 
 ENTRYPOINT ["/app"]

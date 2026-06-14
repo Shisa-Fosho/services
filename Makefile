@@ -21,21 +21,21 @@ help:
 # Start the development stack
 up:
 	@echo "Starting services..."
-	docker compose -f deploy/docker-compose.yml up -d --wait
+	docker compose -f deploy/local/docker-compose.yml up -d --wait
 	@echo "Services started and healthy."
 
 # Stop and clean up
 down:
 	@echo "Stopping services..."
-	docker compose -f deploy/docker-compose.yml down -v
+	docker compose -f deploy/local/docker-compose.yml down -v
 
-# Run unit tests (regenerate bindings first so a fresh clone can `make test`).
-test: gen-contracts
+# Run unit tests (regenerate protobuf + contract bindings first so a fresh clone can `make test`).
+test: proto gen-contracts
 	@echo "Running unit tests..."
 	go test -count=1 ./...
 
 # Run integration tests
-test-integration: gen-contracts
+test-integration: proto gen-contracts
 	@echo "Running integration tests..."
 	go test -count=1 -tags=integration ./...
 
@@ -50,7 +50,7 @@ ONCHAIN_PORT ?= 8546
 ONCHAIN_FORK_RPC ?= https://polygon-bor-rpc.publicnode.com
 ONCHAIN_CONTAINER = shisa-anvil-onchain
 
-test-onchain: gen-contracts
+test-onchain: proto gen-contracts
 	@echo "Starting anvil fork of Polygon on port $(ONCHAIN_PORT)..."
 	@docker rm -f $(ONCHAIN_CONTAINER) >/dev/null 2>&1 || true
 	@docker run -d --name $(ONCHAIN_CONTAINER) -p $(ONCHAIN_PORT):8545 \
@@ -75,7 +75,7 @@ test-onchain: gen-contracts
 	exit $$status
 
 # Run linters
-lint: gen-contracts
+lint: proto gen-contracts
 	@echo "Running golangci-lint..."
 	$(shell go env GOPATH)/bin/golangci-lint run --timeout 5m ./...
 	@echo "Running go vet..."
@@ -88,15 +88,15 @@ lint: gen-contracts
 # shared eth package imports the generated bindings, which are
 # .gitignored — a fresh clone needs them regenerated before `go build`
 # can find the packages.
-build: gen-contracts
+build: proto gen-contracts
 	@echo "Building trading service..."
-	go build -o bin/trading ./cmd/trading
+	go build -buildvcs=false -o bin/trading ./cmd/trading
 	@echo "Building platform service..."
-	go build -o bin/platform ./cmd/platform
+	go build -buildvcs=false -o bin/platform ./cmd/platform
 	@echo "Building settlement worker..."
-	go build -o bin/settlement ./cmd/settlement
+	go build -buildvcs=false -o bin/settlement ./cmd/settlement
 	@echo "Building indexer..."
-	go build -o bin/indexer ./cmd/indexer
+	go build -buildvcs=false -o bin/indexer ./cmd/indexer
 
 # Regenerate abigen contract bindings from the vendored ABI JSON under
 # internal/shared/eth/abi/. Generated code is .gitignored; refreshing
