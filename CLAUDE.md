@@ -151,10 +151,8 @@ migrations/                 # SQL migrations per service, run in order shared �
   ├── platform/             # users, refresh_tokens, markets, positions, etc.
   └── trading/              # orders, trades, balances, api_keys (FK to users in platform)
 deploy/                     # Infrastructure configs
-  ├── docker-compose.yml
-  ├── prometheus.yml
-  ├── grafana/
-  └── nats.conf
+  ├── local/                # Local Docker Compose stack + observability config
+  └── staging/              # GHCR-based staging Compose stack, scripts, and runbook
 docs/                       # Documentation
   ├── architecture.md
   └── testing-onchain.md    # Forked-Polygon on-chain test harness (make test-onchain)

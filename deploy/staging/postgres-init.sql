@@ -1,0 +1,2 @@
+-- Staging postgres init hook.
+-- Keep this file intentionally minimal; schema is managed by cmd/migrate.
