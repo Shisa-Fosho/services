@@ -96,29 +96,13 @@ jobs:
 
   deploy:
     name: deploy staging
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, shisa-staging]
     needs: images
     if: github.event_name == 'push'
     environment: staging
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Configure SSH
-        env:
-          SSH_KEY: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
-          DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.STAGING_DEPLOY_PORT }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_DEPLOY_KNOWN_HOSTS }}
-        run: |
-          install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/shisa_staging
-          chmod 600 ~/.ssh/shisa_staging
-          if [ -n "$DEPLOY_KNOWN_HOSTS" ]; then
-            printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-          else
-            ssh-keyscan -T 30 -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-          fi
 
       - name: Render staging environment file
         env:
@@ -140,7 +124,7 @@ jobs:
           STAGING_GRAFANA_ADMIN_USER: ${{ secrets.STAGING_GRAFANA_ADMIN_USER }}
           STAGING_GRAFANA_ADMIN_PASSWORD: ${{ secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
         run: |
-          install -m 700 -d /tmp/shisa-staging
+          install -m 750 -d /opt/shisa/staging
           {
             printf 'IMAGE_PREFIX=ghcr.io/shisa-fosho/services\n'
             printf 'IMAGE_TAG=%s\n' '${{ github.sha }}'
@@ -161,46 +145,26 @@ jobs:
             printf 'STAGING_PLATFORM_PUBLIC_URL=%s\n' "$STAGING_PLATFORM_PUBLIC_URL"
             printf 'STAGING_GRAFANA_ADMIN_USER=%s\n' "$STAGING_GRAFANA_ADMIN_USER"
             printf 'STAGING_GRAFANA_ADMIN_PASSWORD=%s\n' "$STAGING_GRAFANA_ADMIN_PASSWORD"
-          } > /tmp/shisa-staging/.env
-          chmod 600 /tmp/shisa-staging/.env
+          } > /opt/shisa/staging/.env
+          chmod 600 /opt/shisa/staging/.env
 
-      - name: Copy deploy artifacts to VPS
-        env:
-          DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.STAGING_DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
+      - name: Sync deploy artifacts locally
         run: |
-          tar -C deploy/staging -czf /tmp/shisa-staging/deploy.tgz .
-          scp -P "$DEPLOY_PORT" -i ~/.ssh/shisa_staging /tmp/shisa-staging/deploy.tgz "$DEPLOY_USER@$DEPLOY_HOST:/tmp/shisa-staging-deploy.tgz"
-          scp -P "$DEPLOY_PORT" -i ~/.ssh/shisa_staging /tmp/shisa-staging/.env "$DEPLOY_USER@$DEPLOY_HOST:/tmp/shisa-staging.env"
-          ssh -p "$DEPLOY_PORT" -i ~/.ssh/shisa_staging "$DEPLOY_USER@$DEPLOY_HOST" '
-            set -euo pipefail
-            mkdir -p /opt/shisa/staging
-            tar -xzf /tmp/shisa-staging-deploy.tgz -C /opt/shisa/staging
-            install -m 600 /tmp/shisa-staging.env /opt/shisa/staging/.env
-            rm -f /tmp/shisa-staging-deploy.tgz /tmp/shisa-staging.env
-            chmod +x /opt/shisa/staging/scripts/*.sh
-          '
+          find /opt/shisa/staging -mindepth 1 -maxdepth 1 \
+            ! -name .env \
+            ! -name certs \
+            -exec rm -rf {} +
+          cp -a deploy/staging/. /opt/shisa/staging/
+          chmod +x /opt/shisa/staging/scripts/*.sh
 
       - name: Log VPS into GHCR for this deploy
         env:
-          DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.STAGING_DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          printf '%s' "$GHCR_TOKEN" | ssh -p "$DEPLOY_PORT" -i ~/.ssh/shisa_staging "$DEPLOY_USER@$DEPLOY_HOST" \
-            'docker login ghcr.io -u "${{ github.actor }}" --password-stdin'
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Deploy and smoke-check staging
-        env:
-          DEPLOY_HOST: ${{ secrets.STAGING_DEPLOY_HOST }}
-          DEPLOY_PORT: ${{ secrets.STAGING_DEPLOY_PORT }}
-          DEPLOY_USER: ${{ secrets.STAGING_DEPLOY_USER }}
         run: |
-          ssh -p "$DEPLOY_PORT" -i ~/.ssh/shisa_staging "$DEPLOY_USER@$DEPLOY_HOST" '
-            set -euo pipefail
-            cd /opt/shisa/staging
-            ./scripts/deploy-staging.sh "${{ github.sha }}"
-            ./scripts/smoke-staging.sh
-          '
+          cd /opt/shisa/staging
+          ./scripts/deploy-staging.sh "${{ github.sha }}"
+          ./scripts/smoke-staging.sh
