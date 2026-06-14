@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,8 +79,8 @@ func TestMiddleware_Returns429WithRetryAfter(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decoding body: %v", err)
 	}
-	if body["error"] == "" {
-		t.Fatalf("expected error envelope, got %v", body)
+	if body["error"] != "too many requests" {
+		t.Fatalf("error = %q, want %q", body["error"], "too many requests")
 	}
 }
 
@@ -109,6 +110,9 @@ func TestMiddleware_LockoutShortCircuits(t *testing.T) {
 	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", recorder.Code)
 	}
+	if !strings.Contains(recorder.Body.String(), "too many requests") {
+		t.Errorf("body = %q, want rate-limit rejection reason", recorder.Body.String())
+	}
 	if called {
 		t.Fatal("handler should not be invoked when locked out")
 	}
@@ -130,6 +134,9 @@ func TestMiddleware_KeyByUserFallsBackToIP(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429 (IP-keyed)", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "too many requests") {
+		t.Errorf("body = %q, want rate-limit rejection reason", recorder.Body.String())
 	}
 
 	// Different user on same IP — different bucket, should pass.

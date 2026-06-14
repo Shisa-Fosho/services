@@ -19,6 +19,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	"github.com/Shisa-Fosho/services/internal/platform/data"
+	"github.com/Shisa-Fosho/services/internal/shared/testassert"
 )
 
 // fakeRepo is an in-memory APIKeyRepository implementation for tests.
@@ -234,6 +235,7 @@ func TestDeriveAPIKey_MissingHeaders(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
+	testassert.BodyContains(t, recorder, "POLY_ADDRESS")
 }
 
 func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
@@ -253,6 +255,7 @@ func TestDeriveAPIKey_InvalidSignature(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
+	testassert.BodyContains(t, recorder, "signature verification failed")
 }
 
 func TestDeriveAPIKey_Idempotent(t *testing.T) {
@@ -386,6 +389,7 @@ func TestRevokeAPIKey_NotFound(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
+	testassert.BodyContains(t, recorder, "api key not found")
 }
 
 func TestRevokeAPIKey_MissingField(t *testing.T) {
@@ -408,6 +412,7 @@ func TestRevokeAPIKey_MissingField(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
+	testassert.BodyContains(t, recorder, "api_key is required")
 }
 
 func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
@@ -427,6 +432,7 @@ func TestRevokeAPIKey_RejectsJWT(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
+	testassert.BodyContains(t, recorder, "POLY_API_KEY")
 }
 
 // ---------------------------------------------------------------------------
@@ -517,4 +523,5 @@ func TestListAPIKeys_RejectsJWT(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d; CLOB routes must not accept JWT", recorder.Code, http.StatusUnauthorized)
 	}
+	testassert.BodyContains(t, recorder, "POLY_API_KEY")
 }

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Shisa-Fosho/services/internal/shared/testassert"
 )
 
 // fakeAdminRepo is a tiny in-memory data.AdminRepository for middleware tests.
@@ -65,6 +67,7 @@ func TestAuthenticate_MissingHeader(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
+	testassert.BodyContains(t, recorder, "missing authorization header")
 }
 
 func TestAuthenticate_MalformedHeader(t *testing.T) {
@@ -84,6 +87,7 @@ func TestAuthenticate_MalformedHeader(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
+	testassert.BodyContains(t, recorder, "invalid authorization header")
 }
 
 func TestAuthenticate_ExpiredToken(t *testing.T) {
@@ -191,6 +195,7 @@ func TestRequireAdmin_NonAdminGets403(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusForbidden)
 	}
+	testassert.BodyContains(t, recorder, "forbidden")
 	if *called {
 		t.Error("downstream handler should not be called for non-admin")
 	}
@@ -212,6 +217,7 @@ func TestRequireAdmin_MissingUserContextGets403(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusForbidden)
 	}
+	testassert.BodyContains(t, recorder, "forbidden")
 	if *called {
 		t.Error("downstream handler should not be called without user context")
 	}
@@ -233,6 +239,7 @@ func TestRequireAdmin_RepoErrorGets500(t *testing.T) {
 	if recorder.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
 	}
+	testassert.BodyContains(t, recorder, "internal error")
 	if *called {
 		t.Error("downstream handler should not be called on repo error")
 	}

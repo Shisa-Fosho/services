@@ -18,6 +18,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
+
+	"github.com/Shisa-Fosho/services/internal/shared/testassert"
 )
 
 // fakeRepo is an in-memory Repository double for handler tests. The methods
@@ -765,6 +767,7 @@ func TestHandler_CreateCategory_DuplicateSlug(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "slug already in use")
 }
 
 func TestHandler_CreateCategory_MissingFields(t *testing.T) {
@@ -783,6 +786,7 @@ func TestHandler_CreateCategory_MissingFields(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("name=%q slug=%q: status = %d, want 400", tc.name, tc.slug, rec.Code)
 		}
+		testassert.BodyContains(t, rec, "name and slug are required")
 	}
 }
 
@@ -795,6 +799,7 @@ func TestHandler_CreateCategory_MalformedJSON(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "invalid JSON")
 }
 
 func TestHandler_CreateCategory_RepoError(t *testing.T) {
@@ -809,6 +814,7 @@ func TestHandler_CreateCategory_RepoError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "internal server error")
 }
 
 func TestHandler_UpdateCategory_Success(t *testing.T) {
@@ -846,6 +852,7 @@ func TestHandler_UpdateCategory_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "category not found")
 }
 
 func TestHandler_UpdateCategory_DuplicateSlug(t *testing.T) {
@@ -863,6 +870,7 @@ func TestHandler_UpdateCategory_DuplicateSlug(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "slug already in use")
 }
 
 func TestHandler_DeleteCategory_Success(t *testing.T) {
@@ -890,6 +898,7 @@ func TestHandler_DeleteCategory_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "category not found")
 }
 
 func TestHandler_UpdateEvent_Success(t *testing.T) {
@@ -960,6 +969,7 @@ func TestHandler_UpdateEvent_EmptyCategoryRejected(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 (category cannot be cleared)", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "category_id cannot be empty")
 }
 
 func TestHandler_UpdateEvent_NotFound(t *testing.T) {
@@ -972,6 +982,7 @@ func TestHandler_UpdateEvent_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "event not found")
 }
 
 func TestHandler_UpdateEvent_EmptyBody(t *testing.T) {
@@ -985,6 +996,7 @@ func TestHandler_UpdateEvent_EmptyBody(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 for empty update", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "no fields to update")
 }
 
 func TestHandler_UpdateMarket_Success(t *testing.T) {
@@ -1025,6 +1037,7 @@ func TestHandler_UpdateMarket_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 }
 
 func TestHandler_PauseMarket_Success(t *testing.T) {
@@ -1075,6 +1088,7 @@ func TestHandler_PauseMarket_InvalidTransition(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "invalid status transition")
 }
 
 func TestHandler_PauseMarket_NotFound(t *testing.T) {
@@ -1085,6 +1099,7 @@ func TestHandler_PauseMarket_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 }
 
 func TestHandler_SetFeeRate_Success(t *testing.T) {
@@ -1128,6 +1143,7 @@ func TestHandler_SetFeeRate_OutOfRange(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("bps=%d: status = %d, want 400", tc.FeeRateBps, rec.Code)
 		}
+		testassert.BodyContains(t, rec, "fee_rate_bps")
 	}
 }
 
@@ -1140,6 +1156,7 @@ func TestHandler_SetFeeRate_MarketNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 }
 
 func TestHandler_SetFeeRate_MalformedJSON(t *testing.T) {
@@ -1152,6 +1169,7 @@ func TestHandler_SetFeeRate_MalformedJSON(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "invalid JSON")
 }
 
 func TestHandler_SetFeeRate_RepoError(t *testing.T) {
@@ -1165,6 +1183,7 @@ func TestHandler_SetFeeRate_RepoError(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "internal server error")
 }
 
 // muxWithPublisher mirrors registeredMux but lets the caller substitute a
@@ -1246,6 +1265,7 @@ func TestHandler_BulkPauseMarkets_EmptyList(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "market_ids is required")
 }
 
 func TestHandler_BulkPauseMarkets_OneNotFound_FailsAllOrNothing(t *testing.T) {
@@ -1260,6 +1280,7 @@ func TestHandler_BulkPauseMarkets_OneNotFound_FailsAllOrNothing(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 	// All-or-nothing: m1 must NOT have been paused.
 	if repo.markets[m1.ID].Status != StatusActive {
 		t.Errorf("m1 status = %s, want ACTIVE (batch must roll back)", repo.markets[m1.ID].Status)
@@ -1304,6 +1325,7 @@ func TestHandler_BulkPauseMarkets_OneResolved_FailsAllOrNothing(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "invalid status transition")
 	if repo.markets[m1.ID].Status != StatusActive {
 		t.Errorf("m1 status = %s, want ACTIVE (resolved m2 must not partially commit)",
 			repo.markets[m1.ID].Status)
@@ -1325,6 +1347,7 @@ func TestHandler_BulkPauseMarkets_KVPublishFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 	// DB write committed before publish — m1 is paused even though publish failed.
 	if repo.markets[m1.ID].Status != StatusPaused {
 		t.Errorf("m1 status = %s, want PAUSED — DB commit must succeed before KV publish",
@@ -1343,6 +1366,7 @@ func TestHandler_PauseMarket_KVPublishFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 	// DB write must still have committed — the market must be paused.
 	if repo.markets[seed.ID].Status != StatusPaused {
 		t.Errorf("market.Status = %s, want PAUSED — DB commit must succeed before KV publish",
@@ -1367,6 +1391,7 @@ func TestHandler_PauseMarket_StatusPublishFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "status-change broadcast failed")
 	// KV publish ran and succeeded — the failure was the second-stage broadcast.
 	if len(pub.configCalls) != 1 {
 		t.Errorf("PublishMarketConfig called %d times, want 1", len(pub.configCalls))
@@ -1425,6 +1450,7 @@ func TestHandler_GetMarket_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 }
 
 func TestHandler_UpdateMarket_KVPublishFailureReturns502(t *testing.T) {
@@ -1444,6 +1470,7 @@ func TestHandler_UpdateMarket_KVPublishFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 }
 
 func TestHandler_SetFeeRate_PublishesConfig(t *testing.T) {
@@ -1475,6 +1502,7 @@ func TestHandler_SetFeeRate_KVPublishFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 }
 
 func TestHandler_MethodNotAllowed(t *testing.T) {
@@ -1487,6 +1515,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
+	// The stdlib mux owns 405 responses, so there is no handler-specific failure reason to assert.
 }
 
 // --- helpers for new endpoint tests --------------------------------------
@@ -1616,6 +1645,7 @@ func TestHandler_CreateEvent_Binary_MissingQuestionID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "question_id is required")
 }
 
 func TestHandler_CreateEvent_Binary_EmptyMarkets(t *testing.T) {
@@ -1636,6 +1666,7 @@ func TestHandler_CreateEvent_Binary_EmptyMarkets(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "markets is required")
 }
 
 func TestHandler_CreateEvent_Binary_OnChainNotPrepared(t *testing.T) {
@@ -1820,6 +1851,7 @@ func TestHandler_CreateEvent_Binary_TokenIDChainError(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d body=%q, want 502", rec.Code, rec.Body.String())
 	}
+	testassert.BodyContains(t, rec, "chain read failed")
 }
 
 // --- /admin/events POST (NEG_RISK) --------------------------------------
@@ -1926,6 +1958,7 @@ func TestHandler_CreateEvent_NegRisk_MissingMarketID(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "neg_risk_market_id is required")
 }
 
 func TestHandler_CreateEvent_NegRisk_SingleMarket(t *testing.T) {
@@ -1949,6 +1982,7 @@ func TestHandler_CreateEvent_NegRisk_SingleMarket(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "at least 2 markets")
 }
 
 // --- /admin/events/{id}/resolve -----------------------------------------
@@ -2097,6 +2131,7 @@ func TestHandler_ResolveEvent_EventNotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "event not found")
 }
 
 func TestHandler_ResolveEvent_NegRiskFriendlyError(t *testing.T) {
@@ -2331,6 +2366,7 @@ func TestHandler_SetTradingConfig_InvalidTickSize(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "invalid tick_size")
 }
 
 func TestHandler_SetTradingConfig_NotFound(t *testing.T) {
@@ -2342,6 +2378,7 @@ func TestHandler_SetTradingConfig_NotFound(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "not found")
 }
 
 func TestHandler_SetTradingConfig_PublishFailure(t *testing.T) {
@@ -2356,6 +2393,7 @@ func TestHandler_SetTradingConfig_PublishFailure(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 }
 
 // --- live-status overlay on GET /admin/markets/{id} ----------------------
@@ -2417,6 +2455,7 @@ func TestHandler_GetMarket_BucketReadFailureReturns502(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "reading live market config failed")
 }
 
 // --- idempotent retry after a failed publish ------------------------------
@@ -2450,6 +2489,7 @@ func TestHandler_ResolveEvent_RetrySameOutcomeRepublishes(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("first resolve status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 	if repo.markets[marketID].Status != StatusResolved {
 		t.Fatalf("market status = %s, want RESOLVED (DB committed before publish)",
 			repo.markets[marketID].Status)
@@ -2506,6 +2546,7 @@ func TestHandler_ResolveEvent_RetryDifferentOutcomeConflicts(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("conflicting retry status = %d, want 422", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "on-chain numerators")
 }
 
 func TestHandler_VoidEvent_RetryRepublishes(t *testing.T) {
@@ -2536,6 +2577,7 @@ func TestHandler_VoidEvent_RetryRepublishes(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("first void status = %d, want 502", rec.Code)
 	}
+	testassert.BodyContains(t, rec, "config publish failed")
 
 	pub.configErr = nil
 	pub.configCalls = nil
