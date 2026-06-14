@@ -13,6 +13,7 @@ import (
 
 	"github.com/Shisa-Fosho/services/internal/platform/data"
 	"github.com/Shisa-Fosho/services/internal/shared/eth"
+	"github.com/Shisa-Fosho/services/internal/shared/testassert"
 )
 
 // fakeVerifier implements auth.MessageVerifier for handler tests.
@@ -121,13 +122,6 @@ func testHandler(t *testing.T, repo *fakeRepo, verifier *fakeVerifier) *Handler 
 	return NewHandler(zaptest.NewLogger(t), repo, jwtMgr, verifier, safeCfg, false)
 }
 
-func assertBodyContains(t *testing.T, recorder *httptest.ResponseRecorder, want string) {
-	t.Helper()
-	if !strings.Contains(recorder.Body.String(), want) {
-		t.Errorf("body = %q, want substring %q", recorder.Body.String(), want)
-	}
-}
-
 func TestSignupWallet_Success(t *testing.T) {
 	t.Parallel()
 
@@ -190,7 +184,7 @@ func TestSignupWallet_DuplicateUser(t *testing.T) {
 	if recorder.Code != http.StatusConflict {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusConflict)
 	}
-	assertBodyContains(t, recorder, "user already exists")
+	testassert.BodyContains(t, recorder, "user already exists")
 }
 
 func TestSignupWallet_MissingUsername(t *testing.T) {
@@ -209,7 +203,7 @@ func TestSignupWallet_MissingUsername(t *testing.T) {
 	if recorder.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
-	assertBodyContains(t, recorder, "message, signature, and username are required")
+	testassert.BodyContains(t, recorder, "message, signature, and username are required")
 }
 
 func TestLoginWallet_Success(t *testing.T) {
@@ -252,7 +246,7 @@ func TestLoginWallet_UnknownUser(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
-	assertBodyContains(t, recorder, "user not found")
+	testassert.BodyContains(t, recorder, "user not found")
 }
 
 func TestRefresh_Success(t *testing.T) {
@@ -313,7 +307,7 @@ func TestRefresh_RevokedToken(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
-	assertBodyContains(t, recorder, "token revoked")
+	testassert.BodyContains(t, recorder, "token revoked")
 }
 
 func TestRefresh_MissingCookie(t *testing.T) {
@@ -331,7 +325,7 @@ func TestRefresh_MissingCookie(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
-	assertBodyContains(t, recorder, "missing refresh token")
+	testassert.BodyContains(t, recorder, "missing refresh token")
 }
 
 func TestLogout_ClearsCookie(t *testing.T) {
@@ -410,7 +404,7 @@ func TestSession_InvalidToken(t *testing.T) {
 	if recorder.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
 	}
-	assertBodyContains(t, recorder, "invalid token")
+	testassert.BodyContains(t, recorder, "invalid token")
 }
 
 func TestNonce_ReturnsNonce(t *testing.T) {
