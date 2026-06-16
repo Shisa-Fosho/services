@@ -107,27 +107,25 @@ func (repo *PGRepository) DeleteCategory(ctx context.Context, id string) error {
 	return nil
 }
 
-// CreateEventWithMarkets persists an event together with its constituent
-// markets in a single transaction. Both the event-level and per-market
+// CreateEventWithMarket persists an event together with its single initial
+// market in a single transaction. Both the event-level and per-market
 // validators run before any SQL executes; the transaction then either
 // commits all rows or rolls back fully.
-func (repo *PGRepository) CreateEventWithMarkets(ctx context.Context, event *Event, markets []*Market) (*Event, []*Market, error) {
+func (repo *PGRepository) CreateEventWithMarket(ctx context.Context, event *Event, market *Market) (*Event, *Market, error) {
 	if event == nil {
 		return nil, nil, fmt.Errorf("event is nil: %w", ErrInvalidEvent)
 	}
-	if len(markets) == 0 {
-		return nil, nil, fmt.Errorf("at least one market is required: %w", ErrInvalidEvent)
+	if market == nil {
+		return nil, nil, fmt.Errorf("market is required: %w", ErrInvalidEvent)
 	}
 	if err := ValidateEvent(event, time.Now()); err != nil {
 		return nil, nil, fmt.Errorf("creating event: %w", err)
 	}
-	// All markets get Status=Active regardless of caller intent. EventID is
+	// The market gets Status=Active regardless of caller intent. EventID is
 	// validated later (after the event insert assigns it) — checking it
-	// here would be a chicken-and-egg problem with CreateEventWithMarkets.
-	for _, market := range markets {
-		market.Status = StatusActive
-	}
-	if err := ValidateNegRiskCoherence(event, markets); err != nil {
+	// here would be a chicken-and-egg problem with CreateEventWithMarket.
+	market.Status = StatusActive
+	if err := ValidateNegRiskCoherence(event); err != nil {
 		return nil, nil, fmt.Errorf("creating event: %w", err)
 	}
 
@@ -163,63 +161,56 @@ func (repo *PGRepository) CreateEventWithMarkets(ctx context.Context, event *Eve
 		return nil, nil, fmt.Errorf("scanning created event: %w", err)
 	}
 
-	createdMarkets := make([]*Market, 0, len(markets))
-	for _, market := range markets {
-		market.EventID = createdEvent.ID
-		if err := ValidateMarket(market); err != nil {
-			return nil, nil, fmt.Errorf("validating market %q: %w", market.Slug, err)
+	market.EventID = createdEvent.ID
+	if err := ValidateMarket(market); err != nil {
+		return nil, nil, fmt.Errorf("validating market %q: %w", market.Slug, err)
+	}
+	marketRows, err := tx.Query(ctx,
+		`INSERT INTO markets (
+			slug, event_id, question, outcome_yes_label, outcome_no_label,
+			token_id_yes, token_id_no, condition_id, question_id,
+			status, outcome, price_yes, price_no, volume, open_interest,
+			fee_rate_bps, tick_size, min_size, max_size
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		RETURNING *`,
+		market.Slug, createdEvent.ID, market.Question,
+		market.OutcomeYesLabel, market.OutcomeNoLabel,
+		market.TokenIDYes, market.TokenIDNo, market.ConditionID, market.QuestionID,
+		market.Status, market.Outcome, market.PriceYes, market.PriceNo,
+		market.Volume, market.OpenInterest,
+		market.FeeRateBps, market.TickSize, market.MinSize, market.MaxSize,
+	)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, ErrDuplicateSlug)
 		}
-		marketRows, err := tx.Query(ctx,
-			`INSERT INTO markets (
-				slug, event_id, question, outcome_yes_label, outcome_no_label,
-				token_id_yes, token_id_no, condition_id, question_id,
-				status, outcome, price_yes, price_no, volume, open_interest,
-				fee_rate_bps, tick_size, min_size, max_size
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-			RETURNING *`,
-			market.Slug, createdEvent.ID, market.Question,
-			market.OutcomeYesLabel, market.OutcomeNoLabel,
-			market.TokenIDYes, market.TokenIDNo, market.ConditionID, market.QuestionID,
-			market.Status, market.Outcome, market.PriceYes, market.PriceNo,
-			market.Volume, market.OpenInterest,
-			market.FeeRateBps, market.TickSize, market.MinSize, market.MaxSize,
-		)
-		if err != nil {
-			if postgres.IsUniqueViolation(err) {
-				return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, ErrDuplicateSlug)
-			}
-			return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, err)
+		return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, err)
+	}
+	createdMarket, err := pgx.CollectOneRow(marketRows, pgx.RowToAddrOfStructByName[Market])
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, ErrDuplicateSlug)
 		}
-		createdMarket, err := pgx.CollectOneRow(marketRows, pgx.RowToAddrOfStructByName[Market])
-		if err != nil {
-			if postgres.IsUniqueViolation(err) {
-				return nil, nil, fmt.Errorf("creating market %q: %w", market.Slug, ErrDuplicateSlug)
-			}
-			return nil, nil, fmt.Errorf("scanning created market %q: %w", market.Slug, err)
-		}
-		createdMarkets = append(createdMarkets, createdMarket)
+		return nil, nil, fmt.Errorf("scanning created market %q: %w", market.Slug, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("creating event: committing: %w", err)
 	}
-	return createdEvent, createdMarkets, nil
+	return createdEvent, createdMarket, nil
 }
 
-// AddMarketsToEvent appends markets to an existing non-terminal event.
-// Exact existing matches are returned as idempotent no-ops so a retry after
+// AddMarketToEvent appends one market to an existing non-terminal event.
+// An exact existing match is returned as an idempotent no-op so a retry after
 // DB commit + KV publish failure can republish the same market config.
-func (repo *PGRepository) AddMarketsToEvent(ctx context.Context, eventID string, markets []*Market) (*Event, []*Market, error) {
-	if len(markets) == 0 {
-		return nil, nil, fmt.Errorf("markets is empty: %w", ErrInvalidMarket)
-	}
-	if err := validateAppendMarketSet(markets); err != nil {
-		return nil, nil, err
+func (repo *PGRepository) AddMarketToEvent(ctx context.Context, eventID string, market *Market) (*Event, *Market, error) {
+	if market == nil {
+		return nil, nil, fmt.Errorf("market is required: %w", ErrInvalidMarket)
 	}
 
 	tx, err := repo.pool.Begin(ctx)
 	if err != nil {
-		return nil, nil, fmt.Errorf("adding markets: beginning transaction: %w", err)
+		return nil, nil, fmt.Errorf("adding market: beginning transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -231,18 +222,14 @@ func (repo *PGRepository) AddMarketsToEvent(ctx context.Context, eventID string,
 		return nil, nil, fmt.Errorf("event %s is terminal (%s): %w", eventID, event.Status.String(), ErrInvalidTransition)
 	}
 
-	addedMarkets := make([]*Market, 0, len(markets))
-	for _, market := range markets {
-		market.EventID = eventID
-		market.Status = StatusActive
-		if err := ValidateMarket(market); err != nil {
-			return nil, nil, fmt.Errorf("validating market %q: %w", market.Slug, err)
-		}
-		addedMarket, err := addOrReuseMarket(ctx, tx, eventID, market)
-		if err != nil {
-			return nil, nil, err
-		}
-		addedMarkets = append(addedMarkets, addedMarket)
+	market.EventID = eventID
+	market.Status = StatusActive
+	if err := ValidateMarket(market); err != nil {
+		return nil, nil, fmt.Errorf("validating market %q: %w", market.Slug, err)
+	}
+	addedMarket, err := addOrReuseMarket(ctx, tx, eventID, market)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	updatedEvent, err := readEventInTx(ctx, tx, eventID)
@@ -250,41 +237,9 @@ func (repo *PGRepository) AddMarketsToEvent(ctx context.Context, eventID string,
 		return nil, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, nil, fmt.Errorf("adding markets: committing: %w", err)
+		return nil, nil, fmt.Errorf("adding market: committing: %w", err)
 	}
-	return updatedEvent, addedMarkets, nil
-}
-
-func validateAppendMarketSet(markets []*Market) error {
-	seenSlugs := make(map[string]struct{}, len(markets))
-	seenConditions := make(map[string]struct{}, len(markets))
-	seenQuestions := make(map[string]struct{}, len(markets))
-	for _, market := range markets {
-		if market == nil {
-			return fmt.Errorf("market is nil: %w", ErrInvalidMarket)
-		}
-		if err := rememberAppendIdentity("slug", market.Slug, seenSlugs); err != nil {
-			return err
-		}
-		if err := rememberAppendIdentity("condition_id", market.ConditionID, seenConditions); err != nil {
-			return err
-		}
-		if err := rememberAppendIdentity("question_id", market.QuestionID, seenQuestions); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func rememberAppendIdentity(name, value string, seen map[string]struct{}) error {
-	if value == "" {
-		return nil
-	}
-	if _, ok := seen[value]; ok {
-		return fmt.Errorf("duplicate market %s %q in request: %w", name, value, ErrDuplicateSlug)
-	}
-	seen[value] = struct{}{}
-	return nil
+	return updatedEvent, addedMarket, nil
 }
 
 func lockEventForMarketAppend(ctx context.Context, tx pgx.Tx, eventID string) (*Event, error) {

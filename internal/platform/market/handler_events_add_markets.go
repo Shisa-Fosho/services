@@ -6,96 +6,64 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/ethereum/go-ethereum/common"
-
-	"github.com/Shisa-Fosho/services/internal/shared/eth"
 	"github.com/Shisa-Fosho/services/internal/shared/httputil"
 )
 
-type addBinaryMarketsRequest struct {
-	Market  createBinaryMarketSubobject   `json:"market"`
-	Markets []createBinaryMarketSubobject `json:"markets,omitempty"`
+type addBinaryMarketRequest struct {
+	Market createBinaryMarketSubobject `json:"market"`
 }
 
-type addNegRiskMarketsRequest struct {
-	Market  createNegRiskMarketSubobject   `json:"market"`
-	Markets []createNegRiskMarketSubobject `json:"markets,omitempty"`
+type addNegRiskMarketRequest struct {
+	Market createNegRiskMarketSubobject `json:"market"`
 }
 
-func (handler *Handler) addBinaryMarkets(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) addBinaryMarket(w http.ResponseWriter, r *http.Request) {
 	event, ok := handler.loadEventForMarketAppend(r.Context(), w, r.PathValue("id"), EventTypeBinary)
 	if !ok {
 		return
 	}
-	var req addBinaryMarketsRequest
+	var req addBinaryMarketRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	markets, ok := handler.binaryMarketsFromAppendRequest(w, req)
+	market, ok := binaryMarketFromSubobject(w, req.Market)
 	if !ok {
 		return
 	}
-	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+	if !handler.verifyOutcomeSlotCount(r.Context(), w, market) {
 		return
 	}
-	if !handler.verifyBinaryTokenIDs(r.Context(), w, markets) {
+	if !handler.verifyBinaryTokenIDs(r.Context(), w, market) {
 		return
 	}
-	handler.finishAddMarkets(r.Context(), w, event.ID, markets)
+	handler.finishAddMarket(r.Context(), w, event.ID, market)
 }
 
-func (handler *Handler) addNegRiskMarkets(w http.ResponseWriter, r *http.Request) {
+func (handler *Handler) addNegRiskMarket(w http.ResponseWriter, r *http.Request) {
 	event, ok := handler.loadEventForMarketAppend(r.Context(), w, r.PathValue("id"), EventTypeNegRisk)
 	if !ok {
 		return
 	}
-	var req addNegRiskMarketsRequest
+	var req addNegRiskMarketRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	markets, ok := handler.negRiskMarketsFromAppendRequest(w, req, *event.NegRiskMarketID)
+	market, ok := negRiskMarketFromSubobject(w, req.Market, *event.NegRiskMarketID)
 	if !ok {
 		return
 	}
-	for idx, market := range markets {
-		qid := common.HexToHash(market.QuestionID)
-		cid, err := handler.negRisk.ConditionID(r.Context(), qid)
-		if err != nil {
-			if errors.Is(err, eth.ErrNegRiskDisabled) {
-				httputil.ErrorResponse(w, http.StatusBadGateway,
-					"neg-risk adapter not configured on this deploy")
-				return
-			}
-			handler.chainError(w, fmt.Sprintf("deriving neg-risk condition_id for markets[%d]", idx), err)
-			return
-		}
-		market.ConditionID = cid.Hex()
-	}
-	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+	if !handler.deriveNegRiskConditionID(r.Context(), w, market) {
 		return
 	}
-	if !handler.verifyNegRiskTokenIDs(r.Context(), w, markets) {
+	if !handler.verifyOutcomeSlotCount(r.Context(), w, market) {
 		return
 	}
-	handler.finishAddMarkets(r.Context(), w, event.ID, markets)
-}
-
-func (handler *Handler) binaryMarketsFromAppendRequest(w http.ResponseWriter, req addBinaryMarketsRequest) ([]*Market, bool) {
-	if len(req.Markets) > 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "binary append accepts exactly one market payload named market")
-		return nil, false
+	if !handler.verifyNegRiskTokenIDs(r.Context(), w, market) {
+		return
 	}
-	return handler.binaryMarketsFromSubobjects(w, []createBinaryMarketSubobject{req.Market})
-}
-
-func (handler *Handler) negRiskMarketsFromAppendRequest(w http.ResponseWriter, req addNegRiskMarketsRequest, negRiskMarketID string) ([]*Market, bool) {
-	if len(req.Markets) > 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "neg-risk append accepts exactly one market payload named market")
-		return nil, false
-	}
-	return handler.negRiskMarketsFromSubobjects(w, []createNegRiskMarketSubobject{req.Market}, negRiskMarketID)
+	handler.finishAddMarket(r.Context(), w, event.ID, market)
 }
 
 func (handler *Handler) loadEventForMarketAppend(ctx context.Context, w http.ResponseWriter, eventID string, expected EventType) (*Event, bool) {
@@ -125,129 +93,8 @@ func (handler *Handler) loadEventForMarketAppend(ctx context.Context, w http.Res
 	return event, true
 }
 
-func (handler *Handler) binaryMarketsFromSubobjects(w http.ResponseWriter, reqMarkets []createBinaryMarketSubobject) ([]*Market, bool) {
-	if len(reqMarkets) == 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "markets is required")
-		return nil, false
-	}
-	markets := make([]*Market, 0, len(reqMarkets))
-	for idx, marketReq := range reqMarkets {
-		if marketReq.ConditionID == "" {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].condition_id is required", idx))
-			return nil, false
-		}
-		if !isHexHash(marketReq.ConditionID) {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].condition_id must be a 0x-prefixed 32-byte hex string", idx))
-			return nil, false
-		}
-		if marketReq.QuestionID == "" {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].question_id is required", idx))
-			return nil, false
-		}
-		if !isHexHash(marketReq.QuestionID) {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].question_id must be a 0x-prefixed 32-byte hex string", idx))
-			return nil, false
-		}
-		market, ok := marketFromBinarySubobject(w, idx, marketReq)
-		if !ok {
-			return nil, false
-		}
-		markets = append(markets, market)
-	}
-	return markets, true
-}
-
-func (handler *Handler) negRiskMarketsFromSubobjects(w http.ResponseWriter, reqMarkets []createNegRiskMarketSubobject, negRiskMarketID string) ([]*Market, bool) {
-	if len(reqMarkets) == 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "markets is required")
-		return nil, false
-	}
-	adapterMarketID := common.HexToHash(negRiskMarketID)
-	markets := make([]*Market, 0, len(reqMarkets))
-	for idx, marketReq := range reqMarkets {
-		if marketReq.QuestionID == "" {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].question_id is required", idx))
-			return nil, false
-		}
-		if !isHexHash(marketReq.QuestionID) {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].question_id must be a 0x-prefixed 32-byte hex string", idx))
-			return nil, false
-		}
-		if negRiskMarketIDOf(common.HexToHash(marketReq.QuestionID)) != adapterMarketID {
-			httputil.ErrorResponse(w, http.StatusBadRequest,
-				fmt.Sprintf("markets[%d].question_id does not belong to neg_risk_market_id (first 31 bytes must match)", idx))
-			return nil, false
-		}
-		market, ok := marketFromNegRiskSubobject(w, idx, marketReq)
-		if !ok {
-			return nil, false
-		}
-		markets = append(markets, market)
-	}
-	return markets, true
-}
-
-func marketFromBinarySubobject(w http.ResponseWriter, idx int, marketReq createBinaryMarketSubobject) (*Market, bool) {
-	if !validTokenIDs(w, idx, marketReq.TokenIDYes, marketReq.TokenIDNo) {
-		return nil, false
-	}
-	tickSize, ok := ParseTickSize(marketReq.TickSize)
-	if !ok {
-		httputil.ErrorResponse(w, http.StatusBadRequest,
-			fmt.Sprintf("markets[%d].tick_size %q is invalid", idx, marketReq.TickSize))
-		return nil, false
-	}
-	return &Market{
-		Slug:            marketReq.Slug,
-		Question:        marketReq.Question,
-		OutcomeYesLabel: marketReq.OutcomeYesLabel,
-		OutcomeNoLabel:  marketReq.OutcomeNoLabel,
-		TokenIDYes:      marketReq.TokenIDYes,
-		TokenIDNo:       marketReq.TokenIDNo,
-		ConditionID:     marketReq.ConditionID,
-		QuestionID:      marketReq.QuestionID,
-		Status:          StatusActive,
-		TickSize:        tickSize,
-		MinSize:         marketReq.MinSize,
-		MaxSize:         marketReq.MaxSize,
-		FeeRateBps:      marketReq.FeeRateBps,
-	}, true
-}
-
-func marketFromNegRiskSubobject(w http.ResponseWriter, idx int, marketReq createNegRiskMarketSubobject) (*Market, bool) {
-	if !validTokenIDs(w, idx, marketReq.TokenIDYes, marketReq.TokenIDNo) {
-		return nil, false
-	}
-	tickSize, ok := ParseTickSize(marketReq.TickSize)
-	if !ok {
-		httputil.ErrorResponse(w, http.StatusBadRequest,
-			fmt.Sprintf("markets[%d].tick_size %q is invalid", idx, marketReq.TickSize))
-		return nil, false
-	}
-	return &Market{
-		Slug:            marketReq.Slug,
-		Question:        marketReq.Question,
-		OutcomeYesLabel: marketReq.OutcomeYesLabel,
-		OutcomeNoLabel:  marketReq.OutcomeNoLabel,
-		TokenIDYes:      marketReq.TokenIDYes,
-		TokenIDNo:       marketReq.TokenIDNo,
-		QuestionID:      marketReq.QuestionID,
-		Status:          StatusActive,
-		TickSize:        tickSize,
-		MinSize:         marketReq.MinSize,
-		MaxSize:         marketReq.MaxSize,
-		FeeRateBps:      marketReq.FeeRateBps,
-	}, true
-}
-
-func (handler *Handler) finishAddMarkets(ctx context.Context, w http.ResponseWriter, eventID string, markets []*Market) {
-	updatedEvent, addedMarkets, err := handler.repo.AddMarketsToEvent(ctx, eventID, markets)
+func (handler *Handler) finishAddMarket(ctx context.Context, w http.ResponseWriter, eventID string, market *Market) {
+	updatedEvent, addedMarket, err := handler.repo.AddMarketToEvent(ctx, eventID, market)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrNotFound):
@@ -261,16 +108,14 @@ func (handler *Handler) finishAddMarkets(ctx context.Context, w http.ResponseWri
 		case errors.Is(err, ErrInvalidMarket):
 			httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 		default:
-			handler.internalError(w, "adding markets to event", err)
+			handler.internalError(w, "adding market to event", err)
 		}
 		return
 	}
-	for _, market := range addedMarkets {
-		if err := handler.publisher.PublishMarketConfig(market); err != nil {
-			handler.publishFailed(w, "market-config after market append",
-				"markets added but config publish failed; please retry", market.ID, err)
-			return
-		}
+	if err := handler.publisher.PublishMarketConfig(addedMarket); err != nil {
+		handler.publishFailed(w, "market-config after market append",
+			"market added but config publish failed; please retry", addedMarket.ID, err)
+		return
 	}
 	allMarkets, err := handler.repo.ListMarketsByEvent(ctx, eventID)
 	if err != nil {

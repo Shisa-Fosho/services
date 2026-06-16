@@ -25,29 +25,30 @@ type Repository interface {
 	// category has the given id.
 	DeleteCategory(ctx context.Context, id string) error
 
-	// CreateEventWithMarkets inserts an event and its markets in one
-	// transaction. Returns ErrDuplicateSlug on any unique-constraint
-	// violation (event slug, market slug, condition_id, or question_id),
-	// ErrInvalidEvent / ErrInvalidMarket on shape violations, and
-	// ErrInvalidEvent if markets is empty. All markets are persisted with
+	// CreateEventWithMarket inserts an event and its single initial market
+	// in one transaction. Events are created with exactly one on-chain-backed
+	// market; additional markets are appended afterward via AddMarketToEvent.
+	// Returns ErrDuplicateSlug on any unique-constraint violation (event slug,
+	// market slug, condition_id, or question_id), and ErrInvalidEvent /
+	// ErrInvalidMarket on shape violations. The market is persisted with
 	// Status = Active regardless of the value supplied by the caller.
 	//
 	// Caller-supplied IDs / CreatedAt / UpdatedAt fields are ignored;
-	// the database fills them in and the returned slices carry the
-	// authoritative values.
-	CreateEventWithMarkets(ctx context.Context, event *Event, markets []*Market) (*Event, []*Market, error)
+	// the database fills them in and the returned values carry the
+	// authoritative state.
+	CreateEventWithMarket(ctx context.Context, event *Event, market *Market) (*Event, *Market, error)
 
-	// AddMarketsToEvent appends markets to an existing non-terminal event in
-	// one transaction. The event row is locked before inserts so concurrent
+	// AddMarketToEvent appends one market to an existing non-terminal event in
+	// one transaction. The event row is locked before the insert so concurrent
 	// lifecycle transitions and append attempts serialize. Returns the event
-	// row and exactly the requested markets (newly inserted or exact existing
-	// matches for idempotent retry after a failed downstream publish).
+	// row and the requested market (newly inserted, or the exact existing match
+	// for idempotent retry after a failed downstream publish).
 	//
 	// Returns ErrNotFound if eventID is missing, ErrInvalidTransition if the
-	// event is terminal, ErrInvalidMarket for empty/invalid markets, and
+	// event is terminal, ErrInvalidMarket for an invalid market, and
 	// ErrDuplicateSlug when slug, condition_id, or question_id collides with
 	// a different market.
-	AddMarketsToEvent(ctx context.Context, eventID string, markets []*Market) (*Event, []*Market, error)
+	AddMarketToEvent(ctx context.Context, eventID string, market *Market) (*Event, *Market, error)
 
 	// GetEvent retrieves an event by ID. Returns ErrNotFound if not found.
 	GetEvent(ctx context.Context, id string) (*Event, error)

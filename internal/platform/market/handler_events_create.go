@@ -17,15 +17,15 @@ import (
 
 // createBinaryEventRequest is the POST /admin/events/binary body. Creation
 // accepts exactly one initial market because direct ConditionalTokens
-// prepareCondition(...) creates one condition per on-chain transaction.
+// prepareCondition(...) creates one condition per on-chain transaction;
+// additional markets are appended one at a time afterward.
 type createBinaryEventRequest struct {
-	Slug        string                        `json:"slug"`
-	Title       string                        `json:"title"`
-	Description string                        `json:"description"`
-	CategoryID  string                        `json:"category_id"`
-	EndDate     time.Time                     `json:"end_date"`
-	Market      createBinaryMarketSubobject   `json:"market"`
-	Markets     []createBinaryMarketSubobject `json:"markets,omitempty"`
+	Slug        string                      `json:"slug"`
+	Title       string                      `json:"title"`
+	Description string                      `json:"description"`
+	CategoryID  string                      `json:"category_id"`
+	EndDate     time.Time                   `json:"end_date"`
+	Market      createBinaryMarketSubobject `json:"market"`
 }
 
 type createBinaryMarketSubobject struct {
@@ -48,14 +48,13 @@ type createBinaryMarketSubobject struct {
 // supplies only question_id — condition_id is derived server-side from the
 // NegRiskAdapter so the admin can't supply an inconsistent value.
 type createNegRiskEventRequest struct {
-	Slug            string                         `json:"slug"`
-	Title           string                         `json:"title"`
-	Description     string                         `json:"description"`
-	CategoryID      string                         `json:"category_id"`
-	EndDate         time.Time                      `json:"end_date"`
-	NegRiskMarketID string                         `json:"neg_risk_market_id"`
-	Market          createNegRiskMarketSubobject   `json:"market"`
-	Markets         []createNegRiskMarketSubobject `json:"markets,omitempty"`
+	Slug            string                       `json:"slug"`
+	Title           string                       `json:"title"`
+	Description     string                       `json:"description"`
+	CategoryID      string                       `json:"category_id"`
+	EndDate         time.Time                    `json:"end_date"`
+	NegRiskMarketID string                       `json:"neg_risk_market_id"`
+	Market          createNegRiskMarketSubobject `json:"market"`
 }
 
 type createNegRiskMarketSubobject struct {
@@ -79,14 +78,14 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	markets, ok := handler.binaryMarketsFromCreateRequest(w, req)
+	market, ok := binaryMarketFromSubobject(w, req.Market)
 	if !ok {
 		return
 	}
-	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+	if !handler.verifyOutcomeSlotCount(r.Context(), w, market) {
 		return
 	}
-	if !handler.verifyBinaryTokenIDs(r.Context(), w, markets) {
+	if !handler.verifyBinaryTokenIDs(r.Context(), w, market) {
 		return
 	}
 
@@ -101,7 +100,7 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 		EndDate:          req.EndDate,
 	}
 
-	handler.finishCreate(r.Context(), w, event, markets)
+	handler.finishCreate(r.Context(), w, event, market)
 }
 
 func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Request) {
@@ -119,43 +118,30 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 			"neg_risk_market_id must be a 0x-prefixed 32-byte hex string")
 		return
 	}
-	adapterMarketID := common.HexToHash(req.NegRiskMarketID)
 	// Per NegRiskIdLib (neg-risk-ctf-adapter v2.0.0), MarketIds always have
 	// their final byte zeroed; a non-zero byte means the admin pasted a
 	// questionId where the marketId belongs.
-	if adapterMarketID[31] != 0 {
+	if common.HexToHash(req.NegRiskMarketID)[31] != 0 {
 		httputil.ErrorResponse(w, http.StatusBadRequest,
 			"neg_risk_market_id is not a NegRisk marketId (final byte must be zero)")
 		return
 	}
 
-	markets, ok := handler.negRiskMarketsFromCreateRequest(w, req)
+	market, ok := negRiskMarketFromSubobject(w, req.Market, req.NegRiskMarketID)
 	if !ok {
 		return
 	}
 
-	// Derive condition_id per market via the NegRiskAdapter. Unlike CT
-	// (where conditionId is a pure hash the admin can compute off-chain),
-	// the adapter applies its own salts, so we own this derivation.
-	for idx, market := range markets {
-		qid := common.HexToHash(market.QuestionID)
-		cid, err := handler.negRisk.ConditionID(r.Context(), qid)
-		if err != nil {
-			if errors.Is(err, eth.ErrNegRiskDisabled) {
-				httputil.ErrorResponse(w, http.StatusBadGateway,
-					"neg-risk adapter not configured on this deploy")
-				return
-			}
-			handler.chainError(w, fmt.Sprintf("deriving neg-risk condition_id for markets[%d]", idx), err)
-			return
-		}
-		market.ConditionID = cid.Hex()
-	}
-
-	if !handler.verifyOutcomeSlotCounts(r.Context(), w, markets) {
+	// Derive condition_id via the NegRiskAdapter. Unlike CT (where conditionId
+	// is a pure hash the admin can compute off-chain), the adapter applies its
+	// own salts, so we own this derivation.
+	if !handler.deriveNegRiskConditionID(r.Context(), w, market) {
 		return
 	}
-	if !handler.verifyNegRiskTokenIDs(r.Context(), w, markets) {
+	if !handler.verifyOutcomeSlotCount(r.Context(), w, market) {
+		return
+	}
+	if !handler.verifyNegRiskTokenIDs(r.Context(), w, market) {
 		return
 	}
 
@@ -172,23 +158,122 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		NegRiskMarketID:  &negRiskID,
 	}
 
-	handler.finishCreate(r.Context(), w, event, markets)
+	handler.finishCreate(r.Context(), w, event, market)
 }
 
-func (handler *Handler) binaryMarketsFromCreateRequest(w http.ResponseWriter, req createBinaryEventRequest) ([]*Market, bool) {
-	if len(req.Markets) > 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "binary event creation accepts exactly one initial market payload named market")
+// binaryMarketFromSubobject validates one binary market payload (the create
+// initial market or an append market) and builds the domain Market.
+// condition_id and question_id must be present and well-formed hex; token ids
+// and tick size are checked too. Writes a 400 and returns false on violation.
+func binaryMarketFromSubobject(w http.ResponseWriter, marketReq createBinaryMarketSubobject) (*Market, bool) {
+	if marketReq.ConditionID == "" {
+		httputil.ErrorResponse(w, http.StatusBadRequest, "market.condition_id is required")
 		return nil, false
 	}
-	return handler.binaryMarketsFromSubobjects(w, []createBinaryMarketSubobject{req.Market})
+	if !isHexHash(marketReq.ConditionID) {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"market.condition_id must be a 0x-prefixed 32-byte hex string")
+		return nil, false
+	}
+	if marketReq.QuestionID == "" {
+		httputil.ErrorResponse(w, http.StatusBadRequest, "market.question_id is required")
+		return nil, false
+	}
+	if !isHexHash(marketReq.QuestionID) {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"market.question_id must be a 0x-prefixed 32-byte hex string")
+		return nil, false
+	}
+	if !validTokenIDs(w, marketReq.TokenIDYes, marketReq.TokenIDNo) {
+		return nil, false
+	}
+	tickSize, ok := ParseTickSize(marketReq.TickSize)
+	if !ok {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			fmt.Sprintf("market.tick_size %q is invalid", marketReq.TickSize))
+		return nil, false
+	}
+	return &Market{
+		Slug:            marketReq.Slug,
+		Question:        marketReq.Question,
+		OutcomeYesLabel: marketReq.OutcomeYesLabel,
+		OutcomeNoLabel:  marketReq.OutcomeNoLabel,
+		TokenIDYes:      marketReq.TokenIDYes,
+		TokenIDNo:       marketReq.TokenIDNo,
+		ConditionID:     marketReq.ConditionID,
+		QuestionID:      marketReq.QuestionID,
+		Status:          StatusActive,
+		TickSize:        tickSize,
+		MinSize:         marketReq.MinSize,
+		MaxSize:         marketReq.MaxSize,
+		FeeRateBps:      marketReq.FeeRateBps,
+	}, true
 }
 
-func (handler *Handler) negRiskMarketsFromCreateRequest(w http.ResponseWriter, req createNegRiskEventRequest) ([]*Market, bool) {
-	if len(req.Markets) > 0 {
-		httputil.ErrorResponse(w, http.StatusBadRequest, "neg-risk event creation accepts exactly one initial market payload named market")
+// negRiskMarketFromSubobject validates one NegRisk market payload against the
+// event's neg_risk_market_id and builds the domain Market. condition_id is
+// left empty — the caller derives it from the adapter. Writes a 400 and
+// returns false on violation.
+func negRiskMarketFromSubobject(w http.ResponseWriter, marketReq createNegRiskMarketSubobject, negRiskMarketID string) (*Market, bool) {
+	if marketReq.QuestionID == "" {
+		httputil.ErrorResponse(w, http.StatusBadRequest, "market.question_id is required")
 		return nil, false
 	}
-	return handler.negRiskMarketsFromSubobjects(w, []createNegRiskMarketSubobject{req.Market}, req.NegRiskMarketID)
+	if !isHexHash(marketReq.QuestionID) {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"market.question_id must be a 0x-prefixed 32-byte hex string")
+		return nil, false
+	}
+	// QuestionIds share their first 31 bytes with the parent MarketId; the
+	// final byte is the question index (NegRiskIdLib). Reject a question that
+	// belongs to a different adapter market — otherwise the stored grouping is
+	// wrong and the resolve-time getDetermined check would query the wrong one.
+	if negRiskMarketIDOf(common.HexToHash(marketReq.QuestionID)) != common.HexToHash(negRiskMarketID) {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			"market.question_id does not belong to neg_risk_market_id (first 31 bytes must match)")
+		return nil, false
+	}
+	if !validTokenIDs(w, marketReq.TokenIDYes, marketReq.TokenIDNo) {
+		return nil, false
+	}
+	tickSize, ok := ParseTickSize(marketReq.TickSize)
+	if !ok {
+		httputil.ErrorResponse(w, http.StatusBadRequest,
+			fmt.Sprintf("market.tick_size %q is invalid", marketReq.TickSize))
+		return nil, false
+	}
+	return &Market{
+		Slug:            marketReq.Slug,
+		Question:        marketReq.Question,
+		OutcomeYesLabel: marketReq.OutcomeYesLabel,
+		OutcomeNoLabel:  marketReq.OutcomeNoLabel,
+		TokenIDYes:      marketReq.TokenIDYes,
+		TokenIDNo:       marketReq.TokenIDNo,
+		QuestionID:      marketReq.QuestionID,
+		Status:          StatusActive,
+		TickSize:        tickSize,
+		MinSize:         marketReq.MinSize,
+		MaxSize:         marketReq.MaxSize,
+		FeeRateBps:      marketReq.FeeRateBps,
+	}, true
+}
+
+// deriveNegRiskConditionID sets market.ConditionID from the NegRiskAdapter's
+// getConditionId(questionId). Writes a 502 and returns false if the adapter
+// isn't configured or the chain read fails.
+func (handler *Handler) deriveNegRiskConditionID(ctx context.Context, w http.ResponseWriter, market *Market) bool {
+	cid, err := handler.negRisk.ConditionID(ctx, common.HexToHash(market.QuestionID))
+	if err != nil {
+		if errors.Is(err, eth.ErrNegRiskDisabled) {
+			httputil.ErrorResponse(w, http.StatusBadGateway,
+				"neg-risk adapter not configured on this deploy")
+			return false
+		}
+		handler.chainError(w, "deriving neg-risk condition_id", err)
+		return false
+	}
+	market.ConditionID = cid.Hex()
+	return true
 }
 
 // isHexHash reports whether value is a 0x-prefixed 32-byte hex string —
@@ -223,20 +308,20 @@ func negRiskMarketIDOf(questionID common.Hash) common.Hash {
 // non-empty decimal uint256 strings (the ERC1155 position ids as the
 // Polymarket SDKs render them), and YES distinct from NO. Writes a 400
 // and returns false on violation.
-func validTokenIDs(w http.ResponseWriter, idx int, tokenIDYes, tokenIDNo string) bool {
+func validTokenIDs(w http.ResponseWriter, tokenIDYes, tokenIDNo string) bool {
 	if parseTokenID(tokenIDYes) == nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest,
-			fmt.Sprintf("markets[%d].token_id_yes must be a decimal uint256 string", idx))
+			"market.token_id_yes must be a decimal uint256 string")
 		return false
 	}
 	if parseTokenID(tokenIDNo) == nil {
 		httputil.ErrorResponse(w, http.StatusBadRequest,
-			fmt.Sprintf("markets[%d].token_id_no must be a decimal uint256 string", idx))
+			"market.token_id_no must be a decimal uint256 string")
 		return false
 	}
 	if tokenIDYes == tokenIDNo {
 		httputil.ErrorResponse(w, http.StatusBadRequest,
-			fmt.Sprintf("markets[%d]: token_id_yes and token_id_no must differ", idx))
+			"market: token_id_yes and token_id_no must differ")
 		return false
 	}
 	return true
@@ -255,92 +340,79 @@ func parseTokenID(value string) *big.Int {
 	return parsed
 }
 
-// verifyBinaryTokenIDs confirms each market's token id pair matches the
+// verifyBinaryTokenIDs confirms the market's token id pair matches the
 // on-chain derivation for its conditionId under the configured collateral
 // token. A mismatch means the admin pasted ids that don't correspond to
 // the condition — orders would trade tokens settlement can't redeem.
-// Writes the response and returns false on any failure.
-func (handler *Handler) verifyBinaryTokenIDs(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
-	for idx, market := range markets {
-		yes, no, err := handler.ct.PositionIDs(ctx, handler.collateral, common.HexToHash(market.ConditionID))
-		if err != nil {
-			handler.chainError(w, fmt.Sprintf("deriving position ids for markets[%d]", idx), err)
-			return false
-		}
-		if !handler.tokenIDsMatch(w, idx, market, yes, no) {
-			return false
-		}
+// Writes the response and returns false on failure.
+func (handler *Handler) verifyBinaryTokenIDs(ctx context.Context, w http.ResponseWriter, market *Market) bool {
+	yes, no, err := handler.ct.PositionIDs(ctx, handler.collateral, common.HexToHash(market.ConditionID))
+	if err != nil {
+		handler.chainError(w, "deriving position ids for market", err)
+		return false
 	}
-	return true
+	return handler.tokenIDsMatch(w, market, yes, no)
 }
 
-// verifyNegRiskTokenIDs is the NEG_RISK counterpart of
-// verifyBinaryTokenIDs: the adapter derives position ids from the
-// questionId against its wrapped collateral.
-func (handler *Handler) verifyNegRiskTokenIDs(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
-	for idx, market := range markets {
-		yes, no, err := handler.negRisk.PositionIDs(ctx, common.HexToHash(market.QuestionID))
-		if err != nil {
-			handler.chainError(w, fmt.Sprintf("deriving neg-risk position ids for markets[%d]", idx), err)
-			return false
-		}
-		if !handler.tokenIDsMatch(w, idx, market, yes, no) {
-			return false
-		}
+// verifyNegRiskTokenIDs is the NEG_RISK counterpart of verifyBinaryTokenIDs:
+// the adapter derives position ids from the questionId against its wrapped
+// collateral.
+func (handler *Handler) verifyNegRiskTokenIDs(ctx context.Context, w http.ResponseWriter, market *Market) bool {
+	yes, no, err := handler.negRisk.PositionIDs(ctx, common.HexToHash(market.QuestionID))
+	if err != nil {
+		handler.chainError(w, "deriving neg-risk position ids for market", err)
+		return false
 	}
-	return true
+	return handler.tokenIDsMatch(w, market, yes, no)
 }
 
 // tokenIDsMatch compares a market's stored token ids against the derived
 // (YES, NO) pair, writing a 422 and returning false on mismatch.
-func (handler *Handler) tokenIDsMatch(w http.ResponseWriter, idx int, market *Market, yes, no *big.Int) bool {
+func (handler *Handler) tokenIDsMatch(w http.ResponseWriter, market *Market, yes, no *big.Int) bool {
 	storedYes := parseTokenID(market.TokenIDYes)
 	if storedYes == nil || storedYes.Cmp(yes) != 0 {
 		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-			fmt.Sprintf("markets[%d].token_id_yes does not match on-chain derivation %s: %s",
-				idx, yes.String(), ErrOnChainMismatch.Error()))
+			fmt.Sprintf("market.token_id_yes does not match on-chain derivation %s: %s",
+				yes.String(), ErrOnChainMismatch.Error()))
 		return false
 	}
 	storedNo := parseTokenID(market.TokenIDNo)
 	if storedNo == nil || storedNo.Cmp(no) != 0 {
 		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-			fmt.Sprintf("markets[%d].token_id_no does not match on-chain derivation %s: %s",
-				idx, no.String(), ErrOnChainMismatch.Error()))
+			fmt.Sprintf("market.token_id_no does not match on-chain derivation %s: %s",
+				no.String(), ErrOnChainMismatch.Error()))
 		return false
 	}
 	return true
 }
 
-// verifyOutcomeSlotCounts confirms each market's conditionId has been
-// prepared on ConditionalTokens with exactly two outcome slots. Writes
-// the response and returns false on any failure.
-func (handler *Handler) verifyOutcomeSlotCounts(ctx context.Context, w http.ResponseWriter, markets []*Market) bool {
-	for idx, market := range markets {
-		cid := common.HexToHash(market.ConditionID)
-		count, err := handler.ct.OutcomeSlotCount(ctx, cid)
-		if err != nil {
-			handler.chainError(w, fmt.Sprintf("reading getOutcomeSlotCount for markets[%d]", idx), err)
-			return false
-		}
-		if count == 0 {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("markets[%d]: %s", idx, eth.ErrConditionNotPrepared.Error()))
-			return false
-		}
-		if count != 2 {
-			httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
-				fmt.Sprintf("markets[%d]: outcome slot count %d != 2", idx, count))
-			return false
-		}
+// verifyOutcomeSlotCount confirms the market's conditionId has been prepared
+// on ConditionalTokens with exactly two outcome slots. Writes the response
+// and returns false on failure.
+func (handler *Handler) verifyOutcomeSlotCount(ctx context.Context, w http.ResponseWriter, market *Market) bool {
+	count, err := handler.ct.OutcomeSlotCount(ctx, common.HexToHash(market.ConditionID))
+	if err != nil {
+		handler.chainError(w, "reading getOutcomeSlotCount for market", err)
+		return false
+	}
+	if count == 0 {
+		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("market: %s", eth.ErrConditionNotPrepared.Error()))
+		return false
+	}
+	if count != 2 {
+		httputil.ErrorResponse(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("market: outcome slot count %d != 2", count))
+		return false
 	}
 	return true
 }
 
-// finishCreate persists the event + markets and publishes config to KV.
+// finishCreate persists the event + market and publishes config to KV.
 // No Core NATS publish on create — status didn't change from a client's
 // perspective; clients refresh listings instead.
-func (handler *Handler) finishCreate(ctx context.Context, w http.ResponseWriter, event *Event, markets []*Market) {
-	createdEvent, createdMarkets, err := handler.repo.CreateEventWithMarkets(ctx, event, markets)
+func (handler *Handler) finishCreate(ctx context.Context, w http.ResponseWriter, event *Event, market *Market) {
+	createdEvent, createdMarket, err := handler.repo.CreateEventWithMarket(ctx, event, market)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrDuplicateSlug):
@@ -355,17 +427,13 @@ func (handler *Handler) finishCreate(ctx context.Context, w http.ResponseWriter,
 		return
 	}
 
-	for _, market := range createdMarkets {
-		if err := handler.publisher.PublishMarketConfig(market); err != nil {
-			handler.publishFailed(w, "market-config after event creation",
-				"event created but config publish failed; please retry", market.ID, err)
-			return
-		}
+	if err := handler.publisher.PublishMarketConfig(createdMarket); err != nil {
+		handler.publishFailed(w, "market-config after event creation",
+			"event created but config publish failed; please retry", createdMarket.ID, err)
+		return
 	}
 
 	resp := eventWithMarketsResponse{Event: toEventResponse(createdEvent)}
-	for _, market := range createdMarkets {
-		resp.Markets = append(resp.Markets, toMarketResponse(market))
-	}
+	resp.Markets = append(resp.Markets, toMarketResponse(createdMarket))
 	_ = httputil.EncodeJSON(w, http.StatusCreated, resp)
 }
