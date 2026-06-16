@@ -1658,6 +1658,54 @@ func binaryEventBody(slug, catID, condHex, questionHex string) []byte {
 	}`)
 }
 
+// negRiskEventSingleMarketBody builds a one-initial-market NEG_RISK create
+// request: the event-level neg_risk_market_id plus a single `market` payload
+// supplying only question_id (condition_id is derived server-side).
+func negRiskEventSingleMarketBody(slug, categoryID, negRiskMarketID, questionID string) []byte {
+	return []byte(`{
+		"slug":"` + slug + `","title":"T","description":"D",
+		"category_id":"` + categoryID + `",
+		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
+		"neg_risk_market_id":"` + negRiskMarketID + `",
+		"market":{
+			"slug":"` + slug + `-m1","question":"Q?",
+			"outcome_yes_label":"Yes","outcome_no_label":"No",
+			` + tokenIDsJSON(questionID) + `,
+			"question_id":"` + questionID + `",
+			"tick_size":"0.01","min_size":5
+		}
+	}`)
+}
+
+// addBinaryMarketBody builds a one-market binary append request body for
+// POST /admin/events/{id}/binary/markets.
+func addBinaryMarketBody(slug, conditionID, questionID string) []byte {
+	return []byte(`{
+		"market":{
+			"slug":"` + slug + `","question":"Q?",
+			"outcome_yes_label":"Yes","outcome_no_label":"No",
+			` + tokenIDsJSON(conditionID) + `,
+			"condition_id":"` + conditionID + `","question_id":"` + questionID + `",
+			"tick_size":"0.01","min_size":5
+		}
+	}`)
+}
+
+// addNegRiskMarketBody builds a one-market NegRisk append request body for
+// POST /admin/events/{id}/neg-risk/markets. No neg_risk_market_id is sent —
+// the handler reads it from the stored event.
+func addNegRiskMarketBody(slug, questionID string) []byte {
+	return []byte(`{
+		"market":{
+			"slug":"` + slug + `","question":"Q?",
+			"outcome_yes_label":"Yes","outcome_no_label":"No",
+			` + tokenIDsJSON(questionID) + `,
+			"question_id":"` + questionID + `",
+			"tick_size":"0.01","min_size":5
+		}
+	}`)
+}
+
 // --- /admin/events POST (BINARY) ----------------------------------------
 
 func TestHandler_CreateEvent_Binary_Success(t *testing.T) {
@@ -1779,7 +1827,7 @@ func TestHandler_CreateEvent_Binary_SlotCountMismatch(t *testing.T) {
 	}
 }
 
-func TestHandler_CreateEvent_Binary_MultiMarket(t *testing.T) {
+func TestHandler_CreateEvent_Binary_MultiMarketRejected(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
 	catID := seedCatID(t, repo, "politics")
@@ -1926,6 +1974,44 @@ func TestHandler_CreateEvent_Binary_TokenIDChainError(t *testing.T) {
 // --- /admin/events POST (NEG_RISK) --------------------------------------
 
 func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	categoryID := seedCatID(t, repo, "neg-create")
+	publisher := &fakePublisher{}
+	chain := newFakeChainReader()
+	negRiskMarketID := negRiskMarketIDHex("neg-create")
+	questionID := negRiskQuestionID(negRiskMarketID, 1)
+	conditionID := common.HexToHash(fixedCondHash("neg-condition"))
+	chain.negRiskCondIDs[common.HexToHash(questionID)] = conditionID
+	chain.slotCount[conditionID] = 2
+	mux := muxWithChain(t, repo, publisher, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk",
+		negRiskEventSingleMarketBody("neg-create", categoryID, negRiskMarketID, questionID))
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d body=%q, want 201", rec.Code, rec.Body.String())
+	}
+	var resp eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Event.NegRiskMarketID == nil || *resp.Event.NegRiskMarketID != negRiskMarketID {
+		t.Fatalf("event.neg_risk_market_id = %v, want %s", resp.Event.NegRiskMarketID, negRiskMarketID)
+	}
+	if len(resp.Markets) != 1 {
+		t.Fatalf("created markets = %d, want exactly 1", len(resp.Markets))
+	}
+	// condition_id is derived server-side from the adapter, never supplied.
+	if resp.Markets[0].ConditionID != conditionID.Hex() {
+		t.Fatalf("stored condition_id = %s, want server-derived %s", resp.Markets[0].ConditionID, conditionID.Hex())
+	}
+	if len(publisher.configCalls) != 1 {
+		t.Errorf("PublishMarketConfig calls = %d, want 1", len(publisher.configCalls))
+	}
+}
+
+func TestHandler_CreateEvent_NegRisk_MultiMarketRejected(t *testing.T) {
 	t.Parallel()
 	repo := newFakeRepo()
 	catID := seedCatID(t, repo, "politics")
