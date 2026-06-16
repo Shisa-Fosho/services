@@ -301,31 +301,57 @@ func prepareNegRiskMarket(test *testing.T, env *onchainEnv) (common.Hash, [2]com
 	return marketID, [2]common.Hash{ethtest.QuestionID(marketID, 0), ethtest.QuestionID(marketID, 1)}
 }
 
-// negRiskCreateBody builds the two-market create request with token ids
+// negRiskMarketObject builds a single NegRisk market sub-payload with token ids
 // derived through the adapter.
-func negRiskCreateBody(test *testing.T, env *onchainEnv, slug string, marketID common.Hash, questionIDs [2]common.Hash) []byte {
+func negRiskMarketObject(test *testing.T, env *onchainEnv, slug string, questionID common.Hash) string {
 	test.Helper()
-	markets := ""
-	for idx, questionID := range questionIDs {
-		yes, no, err := env.negRisk.PositionIDs(context.Background(), questionID)
-		if err != nil {
-			test.Fatalf("deriving neg-risk token ids: %v", err)
-		}
-		if idx > 0 {
-			markets += ","
-		}
-		markets += `{"slug":"` + slug + `-m` + questionID.Hex()[64:] + `","question":"Q?",
-			"outcome_yes_label":"Yes","outcome_no_label":"No",
-			"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `",
-			"question_id":"` + questionID.Hex() + `","tick_size":"0.01","min_size":5}`
+	yes, no, err := env.negRisk.PositionIDs(context.Background(), questionID)
+	if err != nil {
+		test.Fatalf("deriving neg-risk token ids: %v", err)
 	}
+	return `{"slug":"` + slug + `-m` + questionID.Hex()[64:] + `","question":"Q?",
+		"outcome_yes_label":"Yes","outcome_no_label":"No",
+		"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `",
+		"question_id":"` + questionID.Hex() + `","tick_size":"0.01","min_size":5}`
+}
+
+func negRiskCreateBody(test *testing.T, env *onchainEnv, slug string, marketID, questionID common.Hash) []byte {
+	test.Helper()
 	return []byte(`{
 		"slug":"` + slug + `","title":"T","description":"D",
 		"category_id":"` + env.catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + marketID.Hex() + `",
-		"markets":[` + markets + `]
+		"market":` + negRiskMarketObject(test, env, slug, questionID) + `
 	}`)
+}
+
+func negRiskAppendBody(test *testing.T, env *onchainEnv, slug string, questionID common.Hash) []byte {
+	test.Helper()
+	return []byte(`{"market":` + negRiskMarketObject(test, env, slug, questionID) + `}`)
+}
+
+func createAndAppendNegRiskEventOnchain(test *testing.T, env *onchainEnv, slug string, marketID common.Hash, questionIDs [2]common.Hash) eventWithMarketsResponse {
+	test.Helper()
+	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
+		negRiskCreateBody(test, env, slug, marketID, questionIDs[0]))
+	if rec.Code != http.StatusCreated {
+		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		test.Fatalf("decode create: %v", err)
+	}
+	rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets",
+		negRiskAppendBody(test, env, slug, questionIDs[1]))
+	if rec.Code != http.StatusOK {
+		test.Fatalf("append: status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var appended eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &appended); err != nil {
+		test.Fatalf("decode append: %v", err)
+	}
+	return appended
 }
 
 func TestOnchain_CreateNegRisk_DerivationsMatchDeployedContracts(test *testing.T) {
@@ -333,15 +359,7 @@ func TestOnchain_CreateNegRisk_DerivationsMatchDeployedContracts(test *testing.T
 	ctx := context.Background()
 	marketID, questionIDs := prepareNegRiskMarket(test, env)
 
-	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
-		negRiskCreateBody(test, env, "oc-neg-"+marketID.Hex()[2:10], marketID, questionIDs))
-	if rec.Code != http.StatusCreated {
-		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
-	}
-	var created eventWithMarketsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		test.Fatalf("decode: %v", err)
-	}
+	created := createAndAppendNegRiskEventOnchain(test, env, "oc-neg-"+marketID.Hex()[2:10], marketID, questionIDs)
 
 	// The server-side condition_id derivation (adapter salt) must match
 	// what the adapter actually prepared on the CTF.
@@ -377,15 +395,7 @@ func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
 	ctx := context.Background()
 	marketID, questionIDs := prepareNegRiskMarket(test, env)
 
-	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
-		negRiskCreateBody(test, env, "oc-negres-"+marketID.Hex()[2:10], marketID, questionIDs))
-	if rec.Code != http.StatusCreated {
-		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
-	}
-	var created eventWithMarketsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		test.Fatalf("decode: %v", err)
-	}
+	created := createAndAppendNegRiskEventOnchain(test, env, "oc-negres-"+marketID.Hex()[2:10], marketID, questionIDs)
 
 	// Oracle reports question 0 YES on the adapter → payouts [1,0] land
 	// on the CTF and the market flips to determined.
@@ -399,7 +409,7 @@ func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
 
 	// Resolving the reported question succeeds.
 	body := []byte(`{"outcomes":{"` + marketByQuestion[questionIDs[0].Hex()] + `":"YES"}}`)
-	rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)
+	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)
 	if rec.Code != http.StatusOK {
 		test.Fatalf("first resolve: status = %d body=%q, want 200", rec.Code, rec.Body.String())
 	}

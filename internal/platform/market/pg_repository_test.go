@@ -421,6 +421,91 @@ func TestPGRepository_CreateEventWithMarkets_DuplicateEventSlug(t *testing.T) {
 	}
 }
 
+func TestPGRepository_AddMarketsToEvent_Binary(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-binary")
+	market := defaultMarket("append-binary-new")
+
+	event, markets, err := repo.AddMarketsToEvent(ctx, eventID, []*Market{market})
+	if err != nil {
+		t.Fatalf("adding markets: %v", err)
+	}
+	if event.ID != eventID {
+		t.Errorf("event id = %q, want %q", event.ID, eventID)
+	}
+	if len(markets) != 1 {
+		t.Fatalf("markets len = %d, want 1", len(markets))
+	}
+	if markets[0].EventID != eventID {
+		t.Errorf("market.event_id = %q, want %q", markets[0].EventID, eventID)
+	}
+
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("event markets after append = %d, want 2", len(all))
+	}
+}
+
+func TestPGRepository_AddMarketsToEvent_TerminalEventRejected(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-terminal")
+	if _, err := pool.Exec(ctx, `UPDATE events SET status = $1 WHERE id = $2`, StatusResolved, eventID); err != nil {
+		t.Fatalf("marking event resolved: %v", err)
+	}
+
+	_, _, err := repo.AddMarketsToEvent(ctx, eventID, []*Market{defaultMarket("append-terminal-new")})
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
+	}
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("event markets after rejected append = %d, want 1", len(all))
+	}
+}
+
+func TestPGRepository_AddMarketsToEvent_IdempotentExistingMarket(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-idem")
+	market := defaultMarket("append-idem-new")
+	_, markets, err := repo.AddMarketsToEvent(ctx, eventID, []*Market{market})
+	if err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+
+	_, retried, err := repo.AddMarketsToEvent(ctx, eventID, []*Market{defaultMarket("append-idem-new")})
+	if err != nil {
+		t.Fatalf("retry add: %v", err)
+	}
+	if len(retried) != 1 || retried[0].ID != markets[0].ID {
+		t.Fatalf("retried markets = %+v, want existing market %s", retried, markets[0].ID)
+	}
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("event markets after idempotent retry = %d, want 2", len(all))
+	}
+}
+
 func TestPGRepository_GetEvent_NotFound(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)

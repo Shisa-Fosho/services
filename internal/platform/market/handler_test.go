@@ -280,6 +280,48 @@ func (f *fakeRepo) CreateEventWithMarkets(_ context.Context, event *Event, marke
 	return storedEvent, storedMarkets, nil
 }
 
+func (f *fakeRepo) AddMarketsToEvent(_ context.Context, eventID string, markets []*Market) (*Event, []*Market, error) {
+	event, ok := f.events[eventID]
+	if !ok {
+		return nil, nil, ErrNotFound
+	}
+	if event.Status.IsTerminal() {
+		return nil, nil, ErrInvalidTransition
+	}
+	if len(markets) == 0 {
+		return nil, nil, ErrInvalidMarket
+	}
+	out := make([]*Market, 0, len(markets))
+	for _, market := range markets {
+		market.EventID = eventID
+		market.Status = StatusActive
+		if err := ValidateMarket(market); err != nil {
+			return nil, nil, err
+		}
+		var existing *Market
+		for _, stored := range f.markets {
+			if stored.EventID == eventID && (stored.Slug == market.Slug || stored.ConditionID == market.ConditionID || stored.QuestionID == market.QuestionID) {
+				existing = stored
+				break
+			}
+			if stored.Slug == market.Slug || stored.ConditionID == market.ConditionID || stored.QuestionID == market.QuestionID {
+				return nil, nil, ErrDuplicateSlug
+			}
+		}
+		if existing != nil {
+			if !sameAppendMarket(existing, market) {
+				return nil, nil, ErrDuplicateSlug
+			}
+			cp := *existing
+			out = append(out, &cp)
+			continue
+		}
+		out = append(out, f.putMarket(market))
+	}
+	eventCopy := *event
+	return &eventCopy, out, nil
+}
+
 func (f *fakeRepo) GetEvent(_ context.Context, id string) (*Event, error) {
 	e, ok := f.events[id]
 	if !ok {
@@ -707,6 +749,35 @@ func mustJSON(t *testing.T, v any) []byte {
 		t.Fatalf("marshal: %v", err)
 	}
 	return buf
+}
+
+func responseContainsMarketSlug(markets []marketResponse, slug string) bool {
+	for _, market := range markets {
+		if market.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
+func responseMarketIDByQuestionID(t *testing.T, markets []marketResponse, questionID string) string {
+	t.Helper()
+	for _, market := range markets {
+		if market.QuestionID == questionID {
+			return market.ID
+		}
+	}
+	t.Fatalf("market with question_id %s not found in response: %+v", questionID, markets)
+	return ""
+}
+
+func responseContainsMarketCondition(markets []marketResponse, conditionID string) bool {
+	for _, market := range markets {
+		if market.ConditionID == conditionID {
+			return true
+		}
+	}
+	return false
 }
 
 func doRequest(t *testing.T, h http.Handler, method, target string, body []byte) *httptest.ResponseRecorder {
@@ -1577,13 +1648,13 @@ func binaryEventBody(slug, catID, condHex, questionHex string) []byte {
 		"slug":"` + slug + `","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"markets":[{
+		"market":{
 			"slug":"` + slug + `-m1","question":"Q?",
 			"outcome_yes_label":"Yes","outcome_no_label":"No",
 			` + tokenIDsJSON(condHex) + `,
 			"condition_id":"` + condHex + `","question_id":"` + questionHex + `",
 			"tick_size":"0.01","min_size":5
-		}]
+		}
 	}`)
 }
 
@@ -1633,13 +1704,13 @@ func TestHandler_CreateEvent_Binary_MissingQuestionID(t *testing.T) {
 		"slug":"e1","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"markets":[{
+		"market":{
 			"slug":"e1-m1","question":"Q?",
 			"outcome_yes_label":"Yes","outcome_no_label":"No",
 			` + tokenIDsJSON(fixedCondHash("c")) + `,
 			"condition_id":"` + fixedCondHash("c") + `",
 			"tick_size":"0.01","min_size":5
-		}]
+		}
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary", body)
 	if rec.Code != http.StatusBadRequest {
@@ -1666,7 +1737,7 @@ func TestHandler_CreateEvent_Binary_EmptyMarkets(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
-	testassert.BodyContains(t, rec, "markets is required")
+	testassert.BodyContains(t, rec, "condition_id is required")
 }
 
 func TestHandler_CreateEvent_Binary_OnChainNotPrepared(t *testing.T) {
@@ -1733,12 +1804,10 @@ func TestHandler_CreateEvent_Binary_MultiMarket(t *testing.T) {
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary", body)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d body=%q, want 201", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%q, want 400", rec.Code, rec.Body.String())
 	}
-	if len(pub.configCalls) != 3 {
-		t.Errorf("PublishMarketConfig calls = %d, want 3", len(pub.configCalls))
-	}
+	testassert.BodyContains(t, rec, "exactly one initial market")
 }
 
 // binaryEventBodyWithTokens is binaryEventBody with caller-controlled
@@ -1748,13 +1817,13 @@ func binaryEventBodyWithTokens(slug, catID, condHex, questionHex, tokenYes, toke
 		"slug":"` + slug + `","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"markets":[{
+		"market":{
 			"slug":"` + slug + `-m1","question":"Q?",
 			"outcome_yes_label":"Yes","outcome_no_label":"No",
 			"token_id_yes":"` + tokenYes + `","token_id_no":"` + tokenNo + `",
 			"condition_id":"` + condHex + `","question_id":"` + questionHex + `",
 			"tick_size":"0.01","min_size":5
-		}]
+		}
 	}`)
 }
 
@@ -1884,19 +1953,10 @@ func TestHandler_CreateEvent_NegRisk_Success(t *testing.T) {
 		]
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("status = %d body=%q, want 201", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%q, want 400", rec.Code, rec.Body.String())
 	}
-	var resp eventWithMarketsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	// Both derived condition_ids should be persisted into the response.
-	for idx, market := range resp.Markets {
-		if market.ConditionID == "" {
-			t.Errorf("response.markets[%d].condition_id is empty", idx)
-		}
-	}
+	testassert.BodyContains(t, rec, "exactly one initial market")
 }
 
 func TestHandler_CreateEvent_NegRisk_TokenIDMismatch(t *testing.T) {
@@ -1905,28 +1965,21 @@ func TestHandler_CreateEvent_NegRisk_TokenIDMismatch(t *testing.T) {
 	catID := seedCatID(t, repo, "x")
 	chain := newFakeChainReader()
 	negRiskID := negRiskMarketIDHex("neg-tok")
-	q1 := negRiskQuestionID(negRiskID, 0)
-	q2 := negRiskQuestionID(negRiskID, 1)
-	c1 := common.HexToHash(fixedCondHash("nt1"))
-	c2 := common.HexToHash(fixedCondHash("nt2"))
-	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
-	chain.negRiskCondIDs[common.HexToHash(q2)] = c2
-	chain.slotCount[c1] = 2
-	chain.slotCount[c2] = 2
+	questionID := negRiskQuestionID(negRiskID, 1)
+	conditionID := common.HexToHash(fixedCondHash("nt1"))
+	chain.negRiskCondIDs[common.HexToHash(questionID)] = conditionID
+	chain.slotCount[conditionID] = 2
 	mux := muxWithChain(t, repo, &fakePublisher{}, chain)
 
-	// Market b carries decimal token ids that don't match the adapter
-	// derivation for q2. Market a is correct and both conditions are
-	// prepared, so the only reachable 422 is b's token check.
+	// The single market carries decimal token ids that don't match the adapter
+	// derivation. The condition is prepared, so the only reachable 422 is the
+	// token check.
 	body := []byte(`{
 		"slug":"neg-tok","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negRiskID + `",
-		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"111","token_id_no":"222","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
-		]
+		"market":{"slug":"bad","question":"?","outcome_yes_label":"Y","outcome_no_label":"N","token_id_yes":"111","token_id_no":"222","question_id":"` + questionID + `","tick_size":"0.01","min_size":5}
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusUnprocessableEntity {
@@ -1974,15 +2027,261 @@ func TestHandler_CreateEvent_NegRisk_SingleMarket(t *testing.T) {
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + fixedCondHash("m") + `",
-		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(fixedCondHash("a")) + `,"question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5}
-		]
+		"market":{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(fixedCondHash("a")) + `,"question_id":"` + fixedCondHash("a") + `","tick_size":"0.01","min_size":5}
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
-	testassert.BodyContains(t, rec, "at least 2 markets")
+	testassert.BodyContains(t, rec, "question_id does not belong to neg_risk_market_id")
+}
+
+// --- /admin/events/{id}/{binary|neg-risk}/markets ------------------------
+
+func TestHandler_AddMarkets_Binary_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-bin")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	c1 := fixedCondHash("add-b1")
+	c2 := fixedCondHash("add-b2")
+	chain.slotCount[common.HexToHash(c1)] = 2
+	chain.slotCount[common.HexToHash(c2)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("add-bin", catID, c1, fixedCondHash("add-bq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	pub.configCalls = nil
+
+	body := addBinaryMarketBody("add-bin-m2", c2, fixedCondHash("add-bq2"))
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/markets", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Errorf("PublishMarketConfig calls = %d, want 1", len(pub.configCalls))
+	}
+	var resp eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Markets) != 2 || !responseContainsMarketSlug(resp.Markets, "add-bin-m2") {
+		t.Fatalf("response markets = %+v, want full event market set including append", resp.Markets)
+	}
+}
+
+func TestHandler_AddMarkets_EventTypeMismatch(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-mismatch")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	c1 := fixedCondHash("add-mm1")
+	c2 := fixedCondHash("add-mm2")
+	chain.slotCount[common.HexToHash(c1)] = 2
+	chain.slotCount[common.HexToHash(c2)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("add-mismatch", catID, c1, fixedCondHash("add-mmq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	body := addNegRiskMarketBody("wrong", negRiskQuestionID(negRiskMarketIDHex("wrong"), 0))
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets", body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
+	}
+	testassert.BodyContains(t, rec, "not NEG_RISK")
+}
+
+func TestHandler_AddMarkets_NegRisk_Success(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-neg-ok")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	negID := negRiskMarketIDHex("add-neg-ok")
+	q1 := negRiskQuestionID(negID, 0)
+	q2 := negRiskQuestionID(negID, 1)
+	q3 := negRiskQuestionID(negID, 2)
+	c1 := common.HexToHash(fixedCondHash("add-ok-c1"))
+	c2 := common.HexToHash(fixedCondHash("add-ok-c2"))
+	c3 := common.HexToHash(fixedCondHash("add-ok-c3"))
+	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
+	chain.negRiskCondIDs[common.HexToHash(q2)] = c2
+	chain.negRiskCondIDs[common.HexToHash(q3)] = c3
+	chain.slotCount[c1] = 2
+	chain.slotCount[c2] = 2
+	chain.slotCount[c3] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	createBody := negRiskEventSingleMarketBody("add-neg-ok", catID, negID, q1)
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", createBody)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	pub.configCalls = nil
+
+	body := addNegRiskMarketBody("c", q3)
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Errorf("PublishMarketConfig calls = %d, want 1", len(pub.configCalls))
+	}
+	var resp eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Markets) != 2 || !responseContainsMarketCondition(resp.Markets, c3.Hex()) {
+		t.Fatalf("response markets = %+v, want full event market set including derived condition_id %s", resp.Markets, c3.Hex())
+	}
+}
+
+func TestHandler_AddMarkets_TerminalEventRejected(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-terminal")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	c1 := fixedCondHash("add-t1")
+	c2 := fixedCondHash("add-t2")
+	chain.slotCount[common.HexToHash(c1)] = 2
+	chain.slotCount[common.HexToHash(c2)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("add-terminal", catID, c1, fixedCondHash("add-tq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	repo.events[created.Event.ID].Status = StatusResolved
+
+	body := addBinaryMarketBody("term-m2", c2, fixedCondHash("add-tq2"))
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/markets", body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%q, want 409", rec.Code, rec.Body.String())
+	}
+	testassert.BodyContains(t, rec, "terminal")
+}
+
+func TestHandler_AddMarkets_DuplicateSlugConflicts(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-dupe")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	c1 := fixedCondHash("add-d1")
+	c2 := fixedCondHash("add-d2")
+	chain.slotCount[common.HexToHash(c1)] = 2
+	chain.slotCount[common.HexToHash(c2)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("add-dupe", catID, c1, fixedCondHash("add-dq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	body := addBinaryMarketBody("add-dupe-m1", c2, fixedCondHash("add-dq2"))
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/markets", body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d body=%q, want 409", rec.Code, rec.Body.String())
+	}
+	testassert.BodyContains(t, rec, "already in use")
+}
+
+func TestHandler_AddMarkets_NegRiskQuestionIDFromDifferentMarket(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-neg")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	negID := negRiskMarketIDHex("add-neg")
+	q1 := negRiskQuestionID(negID, 0)
+	q2 := negRiskQuestionID(negID, 1)
+	c1 := common.HexToHash(fixedCondHash("add-nc1"))
+	c2 := common.HexToHash(fixedCondHash("add-nc2"))
+	chain.negRiskCondIDs[common.HexToHash(q1)] = c1
+	chain.negRiskCondIDs[common.HexToHash(q2)] = c2
+	chain.slotCount[c1] = 2
+	chain.slotCount[c2] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	createBody := negRiskEventSingleMarketBody("add-neg", catID, negID, q1)
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", createBody)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+
+	foreignID := negRiskMarketIDHex("foreign-add")
+	foreignQuestion := negRiskQuestionID(foreignID, 2)
+	body := addNegRiskMarketBody("foreign", foreignQuestion)
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%q, want 400", rec.Code, rec.Body.String())
+	}
+	testassert.BodyContains(t, rec, "does not belong to neg_risk_market_id")
+}
+
+func TestHandler_AddMarkets_RetryAfterPublishFailureRepublishes(t *testing.T) {
+	t.Parallel()
+	repo := newFakeRepo()
+	catID := seedCatID(t, repo, "add-retry")
+	pub := &fakePublisher{}
+	chain := newFakeChainReader()
+	c1 := fixedCondHash("add-r1")
+	c2 := fixedCondHash("add-r2")
+	chain.slotCount[common.HexToHash(c1)] = 2
+	chain.slotCount[common.HexToHash(c2)] = 2
+	mux := muxWithChain(t, repo, pub, chain)
+
+	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary",
+		binaryEventBody("add-retry", catID, c1, fixedCondHash("add-rq1")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	body := addBinaryMarketBody("add-retry-m2", c2, fixedCondHash("add-rq2"))
+
+	pub.configErr = errors.New("KV down")
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/markets", body)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("first append status = %d body=%q, want 502", rec.Code, rec.Body.String())
+	}
+	if len(repo.markets) != 2 {
+		t.Fatalf("markets after failed publish = %d, want DB append committed", len(repo.markets))
+	}
+
+	pub.configErr = nil
+	pub.configCalls = nil
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/markets", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	if len(pub.configCalls) != 1 {
+		t.Errorf("config publishes on retry = %d, want 1", len(pub.configCalls))
+	}
 }
 
 // --- /admin/events/{id}/resolve -----------------------------------------
@@ -2001,25 +2300,33 @@ func TestHandler_ResolveEvent_Partial(t *testing.T) {
 	chain.slotCount[common.HexToHash(c2)] = 2
 	mux := muxWithChain(t, repo, pub, chain)
 
-	// Create the event with two markets.
-	createBody := []byte(`{
-		"slug":"resolve","title":"T","description":"D",
-		"category_id":"` + catID + `",
-		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"markets":[
-			{"slug":"r-m1","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(c1) + `,"condition_id":"` + c1 + `","question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"r-m2","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(c2) + `,"condition_id":"` + c2 + `","question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
-		]
-	}`)
+	// Create the event with one market, then append the second market.
+	createBody := binaryEventBody("resolve", catID, c1, q1)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/binary", createBody)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("setup: status = %d body=%q", rec.Code, rec.Body.String())
+		t.Fatalf("setup create: status = %d body=%q", rec.Code, rec.Body.String())
 	}
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	eventID := created.Event.ID
 	m1ID := created.Markets[0].ID
-	m2ID := created.Markets[1].ID
+
+	appendBody := addBinaryMarketBody("r-m2", c2, q2)
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+eventID+"/binary/markets", appendBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup append: status = %d body=%q", rec.Code, rec.Body.String())
+	}
+	var appended eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &appended)
+	m2ID := ""
+	for _, market := range appended.Markets {
+		if market.Slug == "r-m2" {
+			m2ID = market.ID
+		}
+	}
+	if m2ID == "" {
+		t.Fatalf("appended market not found in response: %+v", appended.Markets)
+	}
 
 	// Pre-load chain: m1's question reported YES = [1,0]. m2 not resolved.
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
@@ -2151,22 +2458,20 @@ func TestHandler_ResolveEvent_NegRiskFriendlyError(t *testing.T) {
 	chain.slotCount[c2] = 2
 	mux := muxWithChain(t, repo, pub, chain)
 
-	body := []byte(`{
-		"slug":"neg-fe","title":"T","description":"D",
-		"category_id":"` + catID + `",
-		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"neg_risk_market_id":"` + negID + `",
-		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q2) + `,"question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
-		]
-	}`)
+	body := negRiskEventSingleMarketBody("neg-fe", catID, negID, q1)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("setup create: %d %s", rec.Code, rec.Body.String())
 	}
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	appendBody := addNegRiskMarketBody("b", q2)
+	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets", appendBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup append: %d %s", rec.Code, rec.Body.String())
+	}
+	var appended eventWithMarketsResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &appended)
 
 	// On-chain state: q1 has been resolved YES (denominator>0, numerators=[1,0]).
 	// Admin tries to resolve q2 as YES. q2's denominator=0 AND getDetermined=true.
@@ -2175,7 +2480,7 @@ func TestHandler_ResolveEvent_NegRiskFriendlyError(t *testing.T) {
 	// q2 has no payouts (denominator stays 0).
 	chain.negRiskDetermined[common.HexToHash(negID)] = true
 
-	resolveBody := []byte(`{"outcomes":{"` + created.Markets[1].ID + `":"YES"}}`)
+	resolveBody := []byte(`{"outcomes":{"` + responseMarketIDByQuestionID(t, appended.Markets, q2) + `":"YES"}}`)
 	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", resolveBody)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", rec.Code)
@@ -2303,16 +2608,7 @@ func TestHandler_VoidEvent_NegRisk_AlwaysRejected(t *testing.T) {
 	chain.slotCount[c2] = 2
 	mux := muxWithChain(t, repo, pub, chain)
 
-	body := []byte(`{
-		"slug":"neg-void","title":"T","description":"D",
-		"category_id":"` + catID + `",
-		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
-		"neg_risk_market_id":"` + negRiskID + `",
-		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q1) + `,"question_id":"` + q1 + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(q2) + `,"question_id":"` + q2 + `","tick_size":"0.01","min_size":5}
-		]
-	}`)
+	body := negRiskEventSingleMarketBody("neg-void", catID, negRiskID, q1)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("setup: %d %s", rec.Code, rec.Body.String())
@@ -2634,15 +2930,13 @@ func TestHandler_CreateEvent_NegRisk_QuestionIDFromDifferentMarket(t *testing.T)
 
 	negRiskID := negRiskMarketIDHex("market-one")
 	foreignID := negRiskMarketIDHex("market-two")
+	foreignQuestionID := negRiskQuestionID(foreignID, 1)
 	body := []byte(`{
 		"slug":"neg-mismatch","title":"T","description":"D",
 		"category_id":"` + catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + negRiskID + `",
-		"markets":[
-			{"slug":"a","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(negRiskID, 0)) + `,"question_id":"` + negRiskQuestionID(negRiskID, 0) + `","tick_size":"0.01","min_size":5},
-			{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(negRiskQuestionID(foreignID, 1)) + `,"question_id":"` + negRiskQuestionID(foreignID, 1) + `","tick_size":"0.01","min_size":5}
-		]
+		"market":{"slug":"b","question":"?","outcome_yes_label":"Y","outcome_no_label":"N",` + tokenIDsJSON(foreignQuestionID) + `,"question_id":"` + foreignQuestionID + `","tick_size":"0.01","min_size":5}
 	}`)
 	rec := doRequest(t, mux, http.MethodPost, "/admin/events/neg-risk", body)
 	if rec.Code != http.StatusBadRequest {

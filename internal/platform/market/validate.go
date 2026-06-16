@@ -97,7 +97,7 @@ func ValidateMarket(market *Market) error {
 // ValidateNegRiskCoherence enforces the event-type ↔ markets-set invariants
 // after an event and its markets have been constructed in memory.
 //
-//   - NEG_RISK ⇒ event.NegRiskMarketID != nil AND len(markets) >= 2.
+//   - NEG_RISK ⇒ event.NegRiskMarketID != nil AND len(markets) >= 1.
 //   - BINARY   ⇒ event.NegRiskMarketID == nil AND len(markets) >= 1.
 //
 // QuestionID is required on every market regardless of event type (enforced
@@ -108,8 +108,8 @@ func ValidateNegRiskCoherence(event *Event, markets []*Market) error {
 		if event.NegRiskMarketID == nil || *event.NegRiskMarketID == "" {
 			return fmt.Errorf("neg_risk_market_id is required for NEG_RISK events: %w", ErrInvalidEvent)
 		}
-		if len(markets) < 2 {
-			return fmt.Errorf("NEG_RISK events require >= 2 markets, got %d: %w", len(markets), ErrInvalidEvent)
+		if len(markets) < 1 {
+			return fmt.Errorf("NEG_RISK events require >= 1 market, got %d: %w", len(markets), ErrInvalidEvent)
 		}
 	case EventTypeBinary:
 		if event.NegRiskMarketID != nil {

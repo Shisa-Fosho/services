@@ -63,6 +63,8 @@ func (handler *Handler) RegisterAdminRoutes(mux *http.ServeMux, adminMiddleware 
 
 	mux.Handle("POST /admin/events/binary", adminMiddleware(http.HandlerFunc(handler.createBinaryEvent)))
 	mux.Handle("POST /admin/events/neg-risk", adminMiddleware(http.HandlerFunc(handler.createNegRiskEvent)))
+	mux.Handle("POST /admin/events/{id}/binary/markets", adminMiddleware(http.HandlerFunc(handler.addBinaryMarkets)))
+	mux.Handle("POST /admin/events/{id}/neg-risk/markets", adminMiddleware(http.HandlerFunc(handler.addNegRiskMarkets)))
 	mux.Handle("PUT /admin/events/{id}", adminMiddleware(http.HandlerFunc(handler.updateEvent)))
 	mux.Handle("POST /admin/events/{id}/binary/resolve", adminMiddleware(http.HandlerFunc(handler.resolveBinaryEvent)))
 	mux.Handle("POST /admin/events/{id}/neg-risk/resolve", adminMiddleware(http.HandlerFunc(handler.resolveNegRiskEvent)))

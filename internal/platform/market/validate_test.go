@@ -268,10 +268,10 @@ func TestValidateNegRiskCoherence(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "neg_risk with one market fails",
+			name:    "neg_risk with one market passes",
 			event:   &Event{EventType: EventTypeNegRisk, NegRiskMarketID: &marketID},
 			markets: mkMarkets(1),
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "neg_risk without neg_risk_market_id fails",

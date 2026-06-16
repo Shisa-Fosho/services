@@ -37,6 +37,18 @@ type Repository interface {
 	// authoritative values.
 	CreateEventWithMarkets(ctx context.Context, event *Event, markets []*Market) (*Event, []*Market, error)
 
+	// AddMarketsToEvent appends markets to an existing non-terminal event in
+	// one transaction. The event row is locked before inserts so concurrent
+	// lifecycle transitions and append attempts serialize. Returns the event
+	// row and exactly the requested markets (newly inserted or exact existing
+	// matches for idempotent retry after a failed downstream publish).
+	//
+	// Returns ErrNotFound if eventID is missing, ErrInvalidTransition if the
+	// event is terminal, ErrInvalidMarket for empty/invalid markets, and
+	// ErrDuplicateSlug when slug, condition_id, or question_id collides with
+	// a different market.
+	AddMarketsToEvent(ctx context.Context, eventID string, markets []*Market) (*Event, []*Market, error)
+
 	// GetEvent retrieves an event by ID. Returns ErrNotFound if not found.
 	GetEvent(ctx context.Context, id string) (*Event, error)
 
