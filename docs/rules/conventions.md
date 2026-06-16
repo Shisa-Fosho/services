@@ -106,6 +106,20 @@ Standard fields: `request_id`, `user_address`, `order_id`, `market_id`, `tx_id`,
   ```
   Two corollaries: (1) **Setup isolation is necessary but not sufficient** — arranging state so only the target check can fire (e.g. seeding a valid slot count so the slot gate passes) is invisible to a future reader, so make the assertion carry the intent. (2) **When the response is deliberately generic** (e.g. all chain-read failures return the same 502 body), the message can't distinguish the cause; rely on setup isolation and add a comment saying so, rather than a misleading body assert. This generalises the happy-path + error-path rule above: an error-path test must assert it failed *for the reason it claims*.
 
+#### Review Existing Tests Before Writing New Ones
+
+When a change or refactor touches behavior, **the starting point is always the tests that already exist — never the code you just wrote.** Before adding a test, find the tests that already cover the function, handler, or resource you changed, and work forward from them.
+
+**The required order of operations:**
+
+1. **Find what exists first.** Search the relevant test file/section for the function or endpoint under test (e.g. grep `handler_<resource>_test.go` for the handler name, or the `// --- /admin/events POST` section markers) before writing a single new test. Tests are organised by the resource they cover, so the existing coverage is findable.
+2. **Update existing tests in place when behavior changed.** If a refactor or behavior change makes a current test wrong, stale, or incomplete, **update that test** — its body, its assertions, AND its name. Do not leave the old test untouched and write a new one alongside; that produces duplicate or conflicting coverage.
+3. **Only write a new test for a genuinely new outcome.** A new test is justified only when it asserts a **distinct, previously-unasserted outcome** — new functionality with no existing coverage, or a new failure/edge path that a change has opened up. "I wrote new code, so I write new tests for it" is the wrong instinct: the new code may be exercised by tests that already exist and just need updating.
+
+**Names and intent must stay aligned.** When you update a test, re-check that its name still describes what it asserts. A test named `_Success` that has been refactored into a rejection check is worse than a duplicate — it actively lies about what's covered, and the next person trusts the name. If the assertion changed, the name changes with it. If a refactor makes an old test prove behavior that can no longer happen, **delete or repurpose it** as part of the same change — don't keep tests that assert obsolete behavior.
+
+**Why:** writing tests scoped only to "the code I just touched" silently grows duplicate coverage, leaves misleadingly-named tests behind after refactors, and scatters one resource's coverage across files named after whatever task spawned them (see the file-naming rule below — tests belong with the resource they cover, never named after a ticket). De-duplicating against existing tests keeps the suite a faithful, navigable map of actual behavior. This is about removing redundancy, not discouraging tests: when a new outcome genuinely lacks coverage, write the test.
+
 ### Validation
 Domain validators (`ValidateUser`, `ValidateMarket`, `ValidatePosition`, etc.) are package-level functions in `internal/<domain>/validate.go` that return an error wrapping a domain sentinel (e.g., `ErrInvalidPosition`).
 
