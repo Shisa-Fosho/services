@@ -266,6 +266,20 @@ Per-resource files own: handler functions for that resource, their request/respo
 - Prefer using existing dependencies over adding new ones. If an existing library provides the required primitives, implement on top of it rather than pulling in a wrapper package.
 - During planning, explicitly audit `go.mod` for overlap before proposing any `go get`.
 
+### Dependency Pinning
+
+**Every dependency — library or tool, current or future — MUST be pinned to an explicit version. Never `@latest`, never an unpinned floating ref.** This applies to:
+
+- **Go module dependencies** — managed by `go.mod`/`go.sum`, which pin by construction. Don't defeat this with `go get module@latest` in scripts; if you bump a dep, commit the resulting `go.mod`/`go.sum` change.
+- **Developer tools installed via `go install`** (in the `Makefile` `tools` target or anywhere else) — every `go install` MUST carry an explicit `@vX.Y.Z`. The versions live in named Makefile variables (`GOLANGCI_LINT_VERSION`, `BUF_VERSION`, etc.) so they're visible and auditable in one place.
+- **CI actions, Docker base images, and any other external artifact** — pin to a tag or digest, never `latest`.
+
+**Why:** `@latest` makes builds non-reproducible and silently imports breaking changes — a green build today can break tomorrow with no code change. A concrete failure this rule exists to prevent: `make tools` installed `golangci-lint@latest`, which resolved to a v1 release built against Go 1.24 while the repo targets Go 1.25.5; the older-Go-built linter could not typecheck 1.25 language constructs, so `make lint` broke through no fault of our code.
+
+**Bumping a pinned version** is a deliberate act: do it in its own commit, with the version change visible in the diff, after verifying the new version builds, tests, and lints clean. Never bump as a drive-by inside an unrelated change.
+
+**Tool toolchain floor.** Tools that embed the Go typechecker (golangci-lint especially) must be **built with a Go toolchain no older than the repo's `go` directive**, or they can't analyze the repo's language version. The `Makefile` enforces this by setting `GOTOOLCHAIN=$(go env GOVERSION)+auto` for every tool install — a floor, not a hard pin, so tools whose own `go.mod` requires a newer patch (e.g. buf) can still upgrade, while nothing is ever built with an older toolchain than the repo targets.
+
 ### Imports
 ```go
 import (
