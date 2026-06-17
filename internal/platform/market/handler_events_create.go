@@ -20,15 +20,15 @@ import (
 // prepareCondition(...) creates one condition per on-chain transaction;
 // additional markets are appended one at a time afterward.
 type createBinaryEventRequest struct {
-	Slug        string                      `json:"slug"`
-	Title       string                      `json:"title"`
-	Description string                      `json:"description"`
-	CategoryID  string                      `json:"category_id"`
-	EndDate     time.Time                   `json:"end_date"`
-	Market      createBinaryMarketSubobject `json:"market"`
+	Slug        string                `json:"slug"`
+	Title       string                `json:"title"`
+	Description string                `json:"description"`
+	CategoryID  string                `json:"category_id"`
+	EndDate     time.Time             `json:"end_date"`
+	Market      binaryMarketSubobject `json:"market"`
 }
 
-type createBinaryMarketSubobject struct {
+type binaryMarketSubobject struct {
 	Slug            string `json:"slug"`
 	Question        string `json:"question"`
 	OutcomeYesLabel string `json:"outcome_yes_label"`
@@ -48,16 +48,16 @@ type createBinaryMarketSubobject struct {
 // supplies only question_id — condition_id is derived server-side from the
 // NegRiskAdapter so the admin can't supply an inconsistent value.
 type createNegRiskEventRequest struct {
-	Slug            string                       `json:"slug"`
-	Title           string                       `json:"title"`
-	Description     string                       `json:"description"`
-	CategoryID      string                       `json:"category_id"`
-	EndDate         time.Time                    `json:"end_date"`
-	NegRiskMarketID string                       `json:"neg_risk_market_id"`
-	Market          createNegRiskMarketSubobject `json:"market"`
+	Slug            string                 `json:"slug"`
+	Title           string                 `json:"title"`
+	Description     string                 `json:"description"`
+	CategoryID      string                 `json:"category_id"`
+	EndDate         time.Time              `json:"end_date"`
+	NegRiskMarketID string                 `json:"neg_risk_market_id"`
+	Market          negRiskMarketSubobject `json:"market"`
 }
 
-type createNegRiskMarketSubobject struct {
+type negRiskMarketSubobject struct {
 	Slug            string `json:"slug"`
 	Question        string `json:"question"`
 	OutcomeYesLabel string `json:"outcome_yes_label"`
@@ -78,7 +78,7 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	market, ok := binaryMarketFromSubobject(w, req.Market)
+	market, ok := parseBinaryMarket(w, req.Market)
 	if !ok {
 		return
 	}
@@ -96,7 +96,7 @@ func (handler *Handler) createBinaryEvent(w http.ResponseWriter, r *http.Request
 		CategoryID:       req.CategoryID,
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
+		Status:           StatusPaused,
 		EndDate:          req.EndDate,
 	}
 
@@ -127,7 +127,7 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	market, ok := negRiskMarketFromSubobject(w, req.Market, req.NegRiskMarketID)
+	market, ok := parseNegRiskMarket(w, req.Market, req.NegRiskMarketID)
 	if !ok {
 		return
 	}
@@ -153,7 +153,7 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 		CategoryID:       req.CategoryID,
 		EventType:        EventTypeNegRisk,
 		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
+		Status:           StatusPaused,
 		EndDate:          req.EndDate,
 		NegRiskMarketID:  &negRiskID,
 	}
@@ -161,11 +161,11 @@ func (handler *Handler) createNegRiskEvent(w http.ResponseWriter, r *http.Reques
 	handler.finishCreate(r.Context(), w, event, market)
 }
 
-// binaryMarketFromSubobject validates one binary market payload (the create
+// parseBinaryMarket validates one binary market payload (the create
 // initial market or an append market) and builds the domain Market.
 // condition_id and question_id must be present and well-formed hex; token ids
 // and tick size are checked too. Writes a 400 and returns false on violation.
-func binaryMarketFromSubobject(w http.ResponseWriter, marketReq createBinaryMarketSubobject) (*Market, bool) {
+func parseBinaryMarket(w http.ResponseWriter, marketReq binaryMarketSubobject) (*Market, bool) {
 	if marketReq.ConditionID == "" {
 		httputil.ErrorResponse(w, http.StatusBadRequest, "market.condition_id is required")
 		return nil, false
@@ -202,7 +202,7 @@ func binaryMarketFromSubobject(w http.ResponseWriter, marketReq createBinaryMark
 		TokenIDNo:       marketReq.TokenIDNo,
 		ConditionID:     marketReq.ConditionID,
 		QuestionID:      marketReq.QuestionID,
-		Status:          StatusActive,
+		Status:          StatusPaused,
 		TickSize:        tickSize,
 		MinSize:         marketReq.MinSize,
 		MaxSize:         marketReq.MaxSize,
@@ -210,11 +210,11 @@ func binaryMarketFromSubobject(w http.ResponseWriter, marketReq createBinaryMark
 	}, true
 }
 
-// negRiskMarketFromSubobject validates one NegRisk market payload against the
+// parseNegRiskMarket validates one NegRisk market payload against the
 // event's neg_risk_market_id and builds the domain Market. condition_id is
 // left empty — the caller derives it from the adapter. Writes a 400 and
 // returns false on violation.
-func negRiskMarketFromSubobject(w http.ResponseWriter, marketReq createNegRiskMarketSubobject, negRiskMarketID string) (*Market, bool) {
+func parseNegRiskMarket(w http.ResponseWriter, marketReq negRiskMarketSubobject, negRiskMarketID string) (*Market, bool) {
 	if marketReq.QuestionID == "" {
 		httputil.ErrorResponse(w, http.StatusBadRequest, "market.question_id is required")
 		return nil, false
@@ -250,7 +250,7 @@ func negRiskMarketFromSubobject(w http.ResponseWriter, marketReq createNegRiskMa
 		TokenIDYes:      marketReq.TokenIDYes,
 		TokenIDNo:       marketReq.TokenIDNo,
 		QuestionID:      marketReq.QuestionID,
-		Status:          StatusActive,
+		Status:          StatusPaused,
 		TickSize:        tickSize,
 		MinSize:         marketReq.MinSize,
 		MaxSize:         marketReq.MaxSize,

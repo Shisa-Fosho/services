@@ -53,6 +53,11 @@ func seedBinaryEvent(t *testing.T, repo *PGRepository, slug string) (string, str
 	if err != nil {
 		t.Fatalf("seeding event+market: %v", err)
 	}
+	// Markets are created paused; activate so downstream resolve/void/pause
+	// tests start from the active state they assume.
+	if _, err := repo.UpdateStatus(context.Background(), createdMarket.ID, StatusActive); err != nil {
+		t.Fatalf("activating seeded market: %v", err)
+	}
 	return createdEvent.ID, createdMarket.ID
 }
 
@@ -86,6 +91,13 @@ func seedBinaryEventWithMarkets(t *testing.T, repo *PGRepository, slug string, m
 			t.Fatalf("appending market %q: %v", marketSlug, err)
 		}
 		ids = append(ids, added.ID)
+	}
+	// Markets are created paused; activate so downstream resolve/void/pause
+	// tests start from the active state they assume.
+	for _, id := range ids {
+		if _, err := repo.UpdateStatus(context.Background(), id, StatusActive); err != nil {
+			t.Fatalf("activating seeded market %s: %v", id, err)
+		}
 	}
 	return createdEvent.ID, ids
 }
@@ -306,6 +318,9 @@ func TestPGRepository_CreateEventWithMarket_Binary(t *testing.T) {
 	if createdMarket.QuestionID != market.QuestionID {
 		t.Errorf("market.question_id = %q, want %q", createdMarket.QuestionID, market.QuestionID)
 	}
+	if createdMarket.Status != StatusPaused {
+		t.Errorf("market status = %s, want PAUSED (markets are created paused)", createdMarket.Status)
+	}
 }
 
 func TestPGRepository_CreateEventWithMarket_NegRisk(t *testing.T) {
@@ -442,6 +457,9 @@ func TestPGRepository_AddMarketToEvent_Binary(t *testing.T) {
 	}
 	if addedMarket.EventID != eventID {
 		t.Errorf("market.event_id = %q, want %q", addedMarket.EventID, eventID)
+	}
+	if addedMarket.Status != StatusPaused {
+		t.Errorf("appended market status = %s, want PAUSED", addedMarket.Status)
 	}
 
 	all, err := repo.ListMarketsByEvent(ctx, eventID)

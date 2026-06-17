@@ -245,7 +245,7 @@ func (f *fakeRepo) CreateEventWithMarket(_ context.Context, event *Event, market
 			return nil, nil, ErrDuplicateSlug
 		}
 	}
-	market.Status = StatusActive
+	market.Status = StatusPaused
 	// Check unique market constraints against existing data.
 	for _, existing := range f.markets {
 		if existing.Slug == market.Slug || existing.ConditionID == market.ConditionID || existing.QuestionID == market.QuestionID {
@@ -277,7 +277,7 @@ func (f *fakeRepo) AddMarketToEvent(_ context.Context, eventID string, market *M
 		return nil, nil, ErrInvalidMarket
 	}
 	market.EventID = eventID
-	market.Status = StatusActive
+	market.Status = StatusPaused
 	if err := ValidateMarket(market); err != nil {
 		return nil, nil, err
 	}
@@ -774,6 +774,17 @@ func doRequest(t *testing.T, h http.Handler, method, target string, body []byte)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// activateMarkets flips every paused market in an event to active, standing in
+// for the admin activation step (paused→active) that now precedes trading and
+// resolution, since markets are created paused.
+func activateMarkets(repo *fakeRepo, eventID string) {
+	for _, m := range repo.markets {
+		if m.EventID == eventID && m.Status == StatusPaused {
+			m.Status = StatusActive
+		}
+	}
 }
 
 func registeredMux(t *testing.T, repo Repository) *http.ServeMux {
@@ -2391,6 +2402,8 @@ func TestHandler_ResolveEvent_Partial(t *testing.T) {
 		t.Fatalf("appended market not found in response: %+v", appended.Markets)
 	}
 
+	activateMarkets(repo, eventID)
+
 	// Pre-load chain: m1's question reported YES = [1,0]. m2 not resolved.
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
 	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(0)}
@@ -2573,6 +2586,7 @@ func TestHandler_VoidEvent_Binary_Success(t *testing.T) {
 	}
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	activateMarkets(repo, created.Event.ID)
 
 	// Equal positive numerators ([1,1]) indicate void.
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(2)
@@ -2614,6 +2628,8 @@ func TestHandler_VoidEvent_Binary_DefaultAllActive(t *testing.T) {
 
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(2)
 	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(1)}
+
+	activateMarkets(repo, created.Event.ID)
 
 	// No body / no market_ids → defaults to "all active".
 	rec = doRequest(t, mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
@@ -2837,6 +2853,7 @@ func TestHandler_ResolveEvent_RetrySameOutcomeRepublishes(t *testing.T) {
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	marketID := created.Markets[0].ID
+	activateMarkets(repo, created.Event.ID)
 
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
 	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(0)}
@@ -2889,6 +2906,7 @@ func TestHandler_ResolveEvent_RetryDifferentOutcomeConflicts(t *testing.T) {
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	marketID := created.Markets[0].ID
+	activateMarkets(repo, created.Event.ID)
 
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(1)
 	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(0)}
@@ -2926,6 +2944,7 @@ func TestHandler_VoidEvent_RetryRepublishes(t *testing.T) {
 	var created eventWithMarketsResponse
 	_ = json.Unmarshal(rec.Body.Bytes(), &created)
 	marketID := created.Markets[0].ID
+	activateMarkets(repo, created.Event.ID)
 
 	chain.denominator[common.HexToHash(c1)] = mkBigInt(2)
 	chain.numerators[common.HexToHash(c1)] = []*big.Int{mkBigInt(1), mkBigInt(1)}

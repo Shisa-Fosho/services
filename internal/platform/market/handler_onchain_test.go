@@ -285,6 +285,7 @@ func TestOnchain_ResolveBinary_YesReported(test *testing.T) {
 	// deployed contracts, not just in our fakes.
 	reportBinaryPayouts(test, env, questionID, []int64{1, 0})
 
+	activateMarkets(env.repo, created.Event.ID)
 	body := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", body)
 	if rec.Code != http.StatusOK {
@@ -337,6 +338,7 @@ func TestOnchain_VoidBinary_EqualPayouts(test *testing.T) {
 	// The binary void pattern: equal positive numerators [1,1].
 	reportBinaryPayouts(test, env, questionID, []int64{1, 1})
 
+	activateMarkets(env.repo, created.Event.ID)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
 	if rec.Code != http.StatusOK {
 		test.Fatalf("void: status = %d body=%q, want 200", rec.Code, rec.Body.String())
@@ -351,6 +353,7 @@ func TestOnchain_VoidBinary_DecisivePayoutsRejected(test *testing.T) {
 	// Chain shows a decisive YES — voiding must be rejected.
 	reportBinaryPayouts(test, env, questionID, []int64{1, 0})
 
+	activateMarkets(env.repo, created.Event.ID)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
 	if rec.Code != http.StatusUnprocessableEntity {
 		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
@@ -557,6 +560,7 @@ func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
 		marketByQuestion[market.QuestionID] = market.ID
 	}
 
+	activateMarkets(env.repo, created.Event.ID)
 	// Resolving the reported question succeeds.
 	body := []byte(`{"outcomes":{"` + marketByQuestion[questionIDs[0].Hex()] + `":"YES"}}`)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)

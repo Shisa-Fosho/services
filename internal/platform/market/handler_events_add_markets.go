@@ -10,11 +10,11 @@ import (
 )
 
 type addBinaryMarketRequest struct {
-	Market createBinaryMarketSubobject `json:"market"`
+	Market binaryMarketSubobject `json:"market"`
 }
 
 type addNegRiskMarketRequest struct {
-	Market createNegRiskMarketSubobject `json:"market"`
+	Market negRiskMarketSubobject `json:"market"`
 }
 
 func (handler *Handler) addBinaryMarket(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +27,7 @@ func (handler *Handler) addBinaryMarket(w http.ResponseWriter, r *http.Request) 
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	market, ok := binaryMarketFromSubobject(w, req.Market)
+	market, ok := parseBinaryMarket(w, req.Market)
 	if !ok {
 		return
 	}
@@ -50,7 +50,7 @@ func (handler *Handler) addNegRiskMarket(w http.ResponseWriter, r *http.Request)
 		httputil.ErrorResponse(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	market, ok := negRiskMarketFromSubobject(w, req.Market, *event.NegRiskMarketID)
+	market, ok := parseNegRiskMarket(w, req.Market, *event.NegRiskMarketID)
 	if !ok {
 		return
 	}

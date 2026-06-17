@@ -121,10 +121,12 @@ func (repo *PGRepository) CreateEventWithMarket(ctx context.Context, event *Even
 	if err := ValidateEvent(event, time.Now()); err != nil {
 		return nil, nil, fmt.Errorf("creating event: %w", err)
 	}
-	// The market gets Status=Active regardless of caller intent. EventID is
-	// validated later (after the event insert assigns it) — checking it
-	// here would be a chicken-and-egg problem with CreateEventWithMarket.
-	market.Status = StatusActive
+	// The market is created paused regardless of caller intent — an admin
+	// activates it explicitly (paused→active) once the config is verified.
+	// EventID is validated later (after the event insert assigns it) —
+	// checking it here would be a chicken-and-egg problem with
+	// CreateEventWithMarket.
+	market.Status = StatusPaused
 	if err := ValidateNegRiskCoherence(event); err != nil {
 		return nil, nil, fmt.Errorf("creating event: %w", err)
 	}
@@ -223,7 +225,9 @@ func (repo *PGRepository) AddMarketToEvent(ctx context.Context, eventID string, 
 	}
 
 	market.EventID = eventID
-	market.Status = StatusActive
+	// Appended markets start paused too — same as the initial market on
+	// create; an admin activates them explicitly.
+	market.Status = StatusPaused
 	if err := ValidateMarket(market); err != nil {
 		return nil, nil, fmt.Errorf("validating market %q: %w", market.Slug, err)
 	}
