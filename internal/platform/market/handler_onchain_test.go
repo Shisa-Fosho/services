@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,34 @@ func createBinaryEventOnchain(test *testing.T, env *onchainEnv, slug string, con
 	return resp
 }
 
+// appendBinaryMarketOnchain appends exactly one binary market to an existing
+// event via the one-at-a-time append endpoint, with token ids derived from
+// the chain through the production reader, and returns the full event market
+// set from the response.
+func appendBinaryMarketOnchain(test *testing.T, env *onchainEnv, eventID, slug string, conditionID, questionID common.Hash) eventWithMarketsResponse {
+	test.Helper()
+	yes, no, err := env.ct.PositionIDs(context.Background(), onchainUSDC, conditionID)
+	if err != nil {
+		test.Fatalf("deriving token ids: %v", err)
+	}
+	body := []byte(`{"market":{
+		"slug":"` + slug + `","question":"Q?",
+		"outcome_yes_label":"Yes","outcome_no_label":"No",
+		"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `",
+		"condition_id":"` + conditionID.Hex() + `","question_id":"` + questionID.Hex() + `",
+		"tick_size":"0.01","min_size":5
+	}}`)
+	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+eventID+"/binary/markets", body)
+	if rec.Code != http.StatusOK {
+		test.Fatalf("append: status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var resp eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		test.Fatalf("decode append response: %v", err)
+	}
+	return resp
+}
+
 // --- binary create --------------------------------------------------------
 
 func TestOnchain_CreateBinary_HappyPath(test *testing.T) {
@@ -159,6 +188,54 @@ func TestOnchain_CreateBinary_HappyPath(test *testing.T) {
 	created := createBinaryEventOnchain(test, env, "oc-create-"+questionID.Hex()[2:10], conditionID, questionID)
 	if created.Markets[0].ConditionID != conditionID.Hex() {
 		test.Errorf("stored condition_id = %s, want %s", created.Markets[0].ConditionID, conditionID.Hex())
+	}
+}
+
+func TestOnchain_CreateBinary_MultiMarketViaAppends(test *testing.T) {
+	env := newOnchainEnv(test)
+
+	// Create with one initial market, then grow the event one CTF
+	// condition at a time until it holds three markets total — each
+	// append prepares a fresh condition on-chain and verifies its
+	// stored condition/token IDs through the production readers.
+	initialQuestionID, initialConditionID := prepareBinaryCondition(test, env)
+	slug := "oc-bin-multi-" + initialQuestionID.Hex()[2:10]
+	created := createBinaryEventOnchain(test, env, slug, initialConditionID, initialQuestionID)
+	eventID := created.Event.ID
+
+	seenConditions := map[string]struct{}{initialConditionID.Hex(): {}}
+	var latest eventWithMarketsResponse
+	for idx := 1; idx <= 2; idx++ {
+		questionID, conditionID := prepareBinaryCondition(test, env)
+		latest = appendBinaryMarketOnchain(test, env, eventID,
+			slug+"-append"+strconv.Itoa(idx), conditionID, questionID)
+		if !responseContainsMarketCondition(latest.Markets, conditionID.Hex()) {
+			test.Fatalf("append %d: condition_id %s not in event market set %+v",
+				idx, conditionID.Hex(), latest.Markets)
+		}
+		seenConditions[conditionID.Hex()] = struct{}{}
+	}
+
+	if len(latest.Markets) != 3 {
+		test.Fatalf("event markets after appends = %d, want 3", len(latest.Markets))
+	}
+	if len(seenConditions) != 3 {
+		test.Fatalf("distinct condition_ids = %d, want 3 (appends must be one-at-a-time distinct conditions)", len(seenConditions))
+	}
+	// Every stored market's condition_id must round-trip a live on-chain
+	// slot-count read — i.e. all three are genuinely prepared conditions.
+	for _, market := range latest.Markets {
+		slotCount, err := env.ct.OutcomeSlotCount(context.Background(), common.HexToHash(market.ConditionID))
+		if err != nil {
+			test.Fatalf("outcome slot count for %s: %v", market.ConditionID, err)
+		}
+		if slotCount != 2 {
+			test.Errorf("market %s slot count = %d, want 2", market.ConditionID, slotCount)
+		}
+	}
+	// create + two appends → three KV publishes.
+	if len(env.pub.configCalls) != 3 {
+		test.Errorf("PublishMarketConfig calls = %d, want 3 (create + 2 appends)", len(env.pub.configCalls))
 	}
 }
 
@@ -208,6 +285,7 @@ func TestOnchain_ResolveBinary_YesReported(test *testing.T) {
 	// deployed contracts, not just in our fakes.
 	reportBinaryPayouts(test, env, questionID, []int64{1, 0})
 
+	activateMarkets(env.repo, created.Event.ID)
 	body := []byte(`{"outcomes":{"` + created.Markets[0].ID + `":"YES"}}`)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/binary/resolve", body)
 	if rec.Code != http.StatusOK {
@@ -260,6 +338,7 @@ func TestOnchain_VoidBinary_EqualPayouts(test *testing.T) {
 	// The binary void pattern: equal positive numerators [1,1].
 	reportBinaryPayouts(test, env, questionID, []int64{1, 1})
 
+	activateMarkets(env.repo, created.Event.ID)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
 	if rec.Code != http.StatusOK {
 		test.Fatalf("void: status = %d body=%q, want 200", rec.Code, rec.Body.String())
@@ -274,6 +353,7 @@ func TestOnchain_VoidBinary_DecisivePayoutsRejected(test *testing.T) {
 	// Chain shows a decisive YES — voiding must be rejected.
 	reportBinaryPayouts(test, env, questionID, []int64{1, 0})
 
+	activateMarkets(env.repo, created.Event.ID)
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/void", []byte(`{}`))
 	if rec.Code != http.StatusUnprocessableEntity {
 		test.Fatalf("status = %d body=%q, want 422", rec.Code, rec.Body.String())
@@ -285,47 +365,85 @@ func TestOnchain_VoidBinary_DecisivePayoutsRejected(test *testing.T) {
 
 // --- NegRisk ---------------------------------------------------------------
 
-// prepareNegRiskMarket prepares a fresh adapter market (admin wallet as
-// oracle) with two questions, returning (marketID, questionIDs).
-func prepareNegRiskMarket(test *testing.T, env *onchainEnv) (common.Hash, [2]common.Hash) {
+// prepareNegRiskMarketN prepares a fresh adapter market (admin wallet as
+// oracle) with questionCount questions, returning (marketID, questionIDs).
+// Each question is prepared in its own prepareQuestion transaction, mirroring
+// the one-question-per-tx on-chain creation model the append flow targets.
+func prepareNegRiskMarketN(test *testing.T, env *onchainEnv, questionCount int) (common.Hash, []common.Hash) {
 	test.Helper()
 	ctx := context.Background()
 	metadata := randomHash() // unique metadata → unique marketId per run
 	receipt := env.chain.SendAs(ctx, onchainAdminWallet, onchainNegRisk,
 		ethtest.PrepareMarketData(test, 0, metadata.Bytes()))
 	marketID := ethtest.MarketIDFromReceipt(test, receipt, onchainNegRisk)
-	env.chain.SendAs(ctx, onchainAdminWallet, onchainNegRisk,
-		ethtest.PrepareQuestionData(test, marketID, []byte("q0")))
-	env.chain.SendAs(ctx, onchainAdminWallet, onchainNegRisk,
-		ethtest.PrepareQuestionData(test, marketID, []byte("q1")))
-	return marketID, [2]common.Hash{ethtest.QuestionID(marketID, 0), ethtest.QuestionID(marketID, 1)}
+	questionIDs := make([]common.Hash, 0, questionCount)
+	for idx := 0; idx < questionCount; idx++ {
+		env.chain.SendAs(ctx, onchainAdminWallet, onchainNegRisk,
+			ethtest.PrepareQuestionData(test, marketID, []byte("q"+strconv.Itoa(idx))))
+		questionIDs = append(questionIDs, ethtest.QuestionID(marketID, byte(idx)))
+	}
+	return marketID, questionIDs
 }
 
-// negRiskCreateBody builds the two-market create request with token ids
-// derived through the adapter.
-func negRiskCreateBody(test *testing.T, env *onchainEnv, slug string, marketID common.Hash, questionIDs [2]common.Hash) []byte {
+// prepareNegRiskMarket prepares a fresh adapter market (admin wallet as
+// oracle) with two questions, returning (marketID, questionIDs).
+func prepareNegRiskMarket(test *testing.T, env *onchainEnv) (common.Hash, [2]common.Hash) {
 	test.Helper()
-	markets := ""
-	for idx, questionID := range questionIDs {
-		yes, no, err := env.negRisk.PositionIDs(context.Background(), questionID)
-		if err != nil {
-			test.Fatalf("deriving neg-risk token ids: %v", err)
-		}
-		if idx > 0 {
-			markets += ","
-		}
-		markets += `{"slug":"` + slug + `-m` + questionID.Hex()[64:] + `","question":"Q?",
-			"outcome_yes_label":"Yes","outcome_no_label":"No",
-			"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `",
-			"question_id":"` + questionID.Hex() + `","tick_size":"0.01","min_size":5}`
+	marketID, questionIDs := prepareNegRiskMarketN(test, env, 2)
+	return marketID, [2]common.Hash{questionIDs[0], questionIDs[1]}
+}
+
+// negRiskMarketObject builds a single NegRisk market sub-payload with token ids
+// derived through the adapter.
+func negRiskMarketObject(test *testing.T, env *onchainEnv, slug string, questionID common.Hash) string {
+	test.Helper()
+	yes, no, err := env.negRisk.PositionIDs(context.Background(), questionID)
+	if err != nil {
+		test.Fatalf("deriving neg-risk token ids: %v", err)
 	}
+	return `{"slug":"` + slug + `-m` + questionID.Hex()[64:] + `","question":"Q?",
+		"outcome_yes_label":"Yes","outcome_no_label":"No",
+		"token_id_yes":"` + yes.String() + `","token_id_no":"` + no.String() + `",
+		"question_id":"` + questionID.Hex() + `","tick_size":"0.01","min_size":5}`
+}
+
+func negRiskCreateBody(test *testing.T, env *onchainEnv, slug string, marketID, questionID common.Hash) []byte {
+	test.Helper()
 	return []byte(`{
 		"slug":"` + slug + `","title":"T","description":"D",
 		"category_id":"` + env.catID + `",
 		"end_date":"` + time.Now().Add(24*time.Hour).UTC().Format(time.RFC3339) + `",
 		"neg_risk_market_id":"` + marketID.Hex() + `",
-		"markets":[` + markets + `]
+		"market":` + negRiskMarketObject(test, env, slug, questionID) + `
 	}`)
+}
+
+func negRiskAppendBody(test *testing.T, env *onchainEnv, slug string, questionID common.Hash) []byte {
+	test.Helper()
+	return []byte(`{"market":` + negRiskMarketObject(test, env, slug, questionID) + `}`)
+}
+
+func createAndAppendNegRiskEventOnchain(test *testing.T, env *onchainEnv, slug string, marketID common.Hash, questionIDs [2]common.Hash) eventWithMarketsResponse {
+	test.Helper()
+	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
+		negRiskCreateBody(test, env, slug, marketID, questionIDs[0]))
+	if rec.Code != http.StatusCreated {
+		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
+	}
+	var created eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		test.Fatalf("decode create: %v", err)
+	}
+	rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/markets",
+		negRiskAppendBody(test, env, slug, questionIDs[1]))
+	if rec.Code != http.StatusOK {
+		test.Fatalf("append: status = %d body=%q, want 200", rec.Code, rec.Body.String())
+	}
+	var appended eventWithMarketsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &appended); err != nil {
+		test.Fatalf("decode append: %v", err)
+	}
+	return appended
 }
 
 func TestOnchain_CreateNegRisk_DerivationsMatchDeployedContracts(test *testing.T) {
@@ -333,15 +451,7 @@ func TestOnchain_CreateNegRisk_DerivationsMatchDeployedContracts(test *testing.T
 	ctx := context.Background()
 	marketID, questionIDs := prepareNegRiskMarket(test, env)
 
-	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
-		negRiskCreateBody(test, env, "oc-neg-"+marketID.Hex()[2:10], marketID, questionIDs))
-	if rec.Code != http.StatusCreated {
-		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
-	}
-	var created eventWithMarketsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		test.Fatalf("decode: %v", err)
-	}
+	created := createAndAppendNegRiskEventOnchain(test, env, "oc-neg-"+marketID.Hex()[2:10], marketID, questionIDs)
 
 	// The server-side condition_id derivation (adapter salt) must match
 	// what the adapter actually prepared on the CTF.
@@ -372,20 +482,73 @@ func TestOnchain_CreateNegRisk_DerivationsMatchDeployedContracts(test *testing.T
 	}
 }
 
-func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
+func TestOnchain_CreateNegRisk_MultiMarketViaAppends(test *testing.T) {
 	env := newOnchainEnv(test)
 	ctx := context.Background()
-	marketID, questionIDs := prepareNegRiskMarket(test, env)
+
+	// One adapter market, three questions prepared one-per-tx. Create
+	// with the first question, then append the remaining two one at a
+	// time — the append handler derives the parent neg_risk_market_id
+	// from the stored event, never from the request.
+	marketID, questionIDs := prepareNegRiskMarketN(test, env, 3)
+	slug := "oc-neg-multi-" + marketID.Hex()[2:10]
 
 	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/neg-risk",
-		negRiskCreateBody(test, env, "oc-negres-"+marketID.Hex()[2:10], marketID, questionIDs))
+		negRiskCreateBody(test, env, slug, marketID, questionIDs[0]))
 	if rec.Code != http.StatusCreated {
 		test.Fatalf("create: status = %d body=%q, want 201", rec.Code, rec.Body.String())
 	}
 	var created eventWithMarketsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
-		test.Fatalf("decode: %v", err)
+		test.Fatalf("decode create: %v", err)
 	}
+	eventID := created.Event.ID
+
+	var latest eventWithMarketsResponse
+	for idx := 1; idx <= 2; idx++ {
+		rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+eventID+"/neg-risk/markets",
+			negRiskAppendBody(test, env, slug+"-a"+strconv.Itoa(idx), questionIDs[idx]))
+		if rec.Code != http.StatusOK {
+			test.Fatalf("append %d: status = %d body=%q, want 200", idx, rec.Code, rec.Body.String())
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &latest); err != nil {
+			test.Fatalf("decode append %d: %v", idx, err)
+		}
+	}
+
+	if len(latest.Markets) != 3 {
+		test.Fatalf("event markets after appends = %d, want 3", len(latest.Markets))
+	}
+	// All three markets must share the one stored neg_risk_market_id and
+	// carry the adapter-derived condition_id for their question.
+	if latest.Event.NegRiskMarketID == nil || *latest.Event.NegRiskMarketID != marketID.Hex() {
+		test.Fatalf("event.neg_risk_market_id = %v, want %s", latest.Event.NegRiskMarketID, marketID.Hex())
+	}
+	conditionByQuestion := map[string]string{}
+	for _, market := range latest.Markets {
+		conditionByQuestion[market.QuestionID] = market.ConditionID
+	}
+	for idx, questionID := range questionIDs {
+		derived, err := env.negRisk.ConditionID(ctx, questionID)
+		if err != nil {
+			test.Fatalf("getConditionId[%d]: %v", idx, err)
+		}
+		stored, ok := conditionByQuestion[questionID.Hex()]
+		if !ok {
+			test.Fatalf("question_id %s missing from event market set %+v", questionID.Hex(), latest.Markets)
+		}
+		if stored != derived.Hex() {
+			test.Errorf("question %d: stored condition_id = %s, want adapter-derived %s", idx, stored, derived.Hex())
+		}
+	}
+}
+
+func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
+	env := newOnchainEnv(test)
+	ctx := context.Background()
+	marketID, questionIDs := prepareNegRiskMarket(test, env)
+
+	created := createAndAppendNegRiskEventOnchain(test, env, "oc-negres-"+marketID.Hex()[2:10], marketID, questionIDs)
 
 	// Oracle reports question 0 YES on the adapter → payouts [1,0] land
 	// on the CTF and the market flips to determined.
@@ -397,9 +560,10 @@ func TestOnchain_ResolveNegRisk_SecondYesRejected(test *testing.T) {
 		marketByQuestion[market.QuestionID] = market.ID
 	}
 
+	activateMarkets(env.repo, created.Event.ID)
 	// Resolving the reported question succeeds.
 	body := []byte(`{"outcomes":{"` + marketByQuestion[questionIDs[0].Hex()] + `":"YES"}}`)
-	rec = doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)
+	rec := doRequest(test, env.mux, http.MethodPost, "/admin/events/"+created.Event.ID+"/neg-risk/resolve", body)
 	if rec.Code != http.StatusOK {
 		test.Fatalf("first resolve: status = %d body=%q, want 200", rec.Code, rec.Body.String())
 	}

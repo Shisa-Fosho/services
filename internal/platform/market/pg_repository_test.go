@@ -35,7 +35,7 @@ func seedCategory(t *testing.T, repo *PGRepository, slug string) string {
 }
 
 // seedBinaryEvent creates a category + a BINARY event with one market via
-// CreateEventWithMarkets, and returns the event id and market id.
+// CreateEventWithMarket, and returns the event id and market id.
 func seedBinaryEvent(t *testing.T, repo *PGRepository, slug string) (string, string) {
 	t.Helper()
 	catID := seedCategory(t, repo, slug+"-cat")
@@ -49,15 +49,61 @@ func seedBinaryEvent(t *testing.T, repo *PGRepository, slug string) (string, str
 		EndDate:          time.Now().Add(30 * 24 * time.Hour),
 	}
 	market := defaultMarket(slug)
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(context.Background(), event, []*Market{market})
+	createdEvent, createdMarket, err := repo.CreateEventWithMarket(context.Background(), event, market)
 	if err != nil {
 		t.Fatalf("seeding event+market: %v", err)
 	}
-	return createdEvent.ID, createdMarkets[0].ID
+	// Markets are created paused; activate so downstream resolve/void/pause
+	// tests start from the active state they assume.
+	if _, err := repo.UpdateStatus(context.Background(), createdMarket.ID, StatusActive); err != nil {
+		t.Fatalf("activating seeded market: %v", err)
+	}
+	return createdEvent.ID, createdMarket.ID
+}
+
+// seedBinaryEventWithMarkets creates a BINARY event with the first market at
+// creation, then appends the rest one at a time (mirroring the production
+// one-at-a-time model). Returns the event id and the ordered market ids.
+// Used to set up multi-market events for resolve/void tests.
+func seedBinaryEventWithMarkets(t *testing.T, repo *PGRepository, slug string, marketSlugs ...string) (string, []string) {
+	t.Helper()
+	if len(marketSlugs) == 0 {
+		t.Fatalf("seedBinaryEventWithMarkets: need at least one market slug")
+	}
+	catID := seedCategory(t, repo, slug+"-cat")
+	event := &Event{
+		Slug:             slug + "-event",
+		Title:            slug,
+		CategoryID:       catID,
+		EventType:        EventTypeBinary,
+		ResolutionConfig: json.RawMessage(`{}`),
+		Status:           StatusActive,
+		EndDate:          time.Now().Add(30 * 24 * time.Hour),
+	}
+	createdEvent, firstMarket, err := repo.CreateEventWithMarket(context.Background(), event, defaultMarket(marketSlugs[0]))
+	if err != nil {
+		t.Fatalf("seeding event+market: %v", err)
+	}
+	ids := []string{firstMarket.ID}
+	for _, marketSlug := range marketSlugs[1:] {
+		_, added, err := repo.AddMarketToEvent(context.Background(), createdEvent.ID, defaultMarket(marketSlug))
+		if err != nil {
+			t.Fatalf("appending market %q: %v", marketSlug, err)
+		}
+		ids = append(ids, added.ID)
+	}
+	// Markets are created paused; activate so downstream resolve/void/pause
+	// tests start from the active state they assume.
+	for _, id := range ids {
+		if _, err := repo.UpdateStatus(context.Background(), id, StatusActive); err != nil {
+			t.Fatalf("activating seeded market %s: %v", id, err)
+		}
+	}
+	return createdEvent.ID, ids
 }
 
 // defaultMarket builds a domain Market with all required fields populated
-// from a slug, ready for CreateEventWithMarkets.
+// from a slug, ready for CreateEventWithMarket.
 func defaultMarket(slug string) *Market {
 	return &Market{
 		Slug:            slug,
@@ -240,7 +286,7 @@ func TestPGRepository_DeleteCategory_NotFound(t *testing.T) {
 
 // --- events + markets create -------------------------------------------------
 
-func TestPGRepository_CreateEventWithMarkets_Binary(t *testing.T) {
+func TestPGRepository_CreateEventWithMarket_Binary(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -259,56 +305,25 @@ func TestPGRepository_CreateEventWithMarkets_Binary(t *testing.T) {
 	}
 	market := defaultMarket("election-trump-wins")
 
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event, []*Market{market})
+	createdEvent, createdMarket, err := repo.CreateEventWithMarket(ctx, event, market)
 	if err != nil {
-		t.Fatalf("creating event with markets: %v", err)
+		t.Fatalf("creating event with market: %v", err)
 	}
 	if createdEvent.ID == "" {
 		t.Error("expected non-empty event id")
 	}
-	if len(createdMarkets) != 1 {
-		t.Fatalf("expected 1 market, got %d", len(createdMarkets))
+	if createdMarket.EventID != createdEvent.ID {
+		t.Errorf("market.event_id = %q, want %q", createdMarket.EventID, createdEvent.ID)
 	}
-	if createdMarkets[0].EventID != createdEvent.ID {
-		t.Errorf("market.event_id = %q, want %q", createdMarkets[0].EventID, createdEvent.ID)
+	if createdMarket.QuestionID != market.QuestionID {
+		t.Errorf("market.question_id = %q, want %q", createdMarket.QuestionID, market.QuestionID)
 	}
-	if createdMarkets[0].QuestionID != market.QuestionID {
-		t.Errorf("market.question_id = %q, want %q", createdMarkets[0].QuestionID, market.QuestionID)
-	}
-}
-
-func TestPGRepository_CreateEventWithMarkets_MultiBinary(t *testing.T) {
-	pool := postgres.TestPool(t)
-	cleanTables(t, pool)
-	repo := NewPGRepository(pool)
-	ctx := context.Background()
-
-	catID := seedCategory(t, repo, "politics")
-	event := &Event{
-		Slug:             "multi-binary",
-		Title:            "Several Binary Questions",
-		CategoryID:       catID,
-		EventType:        EventTypeBinary,
-		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
-		EndDate:          time.Now().Add(30 * 24 * time.Hour),
-	}
-	markets := []*Market{
-		defaultMarket("multi-q1"),
-		defaultMarket("multi-q2"),
-		defaultMarket("multi-q3"),
-	}
-
-	_, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event, markets)
-	if err != nil {
-		t.Fatalf("creating multi-binary event: %v", err)
-	}
-	if len(createdMarkets) != 3 {
-		t.Errorf("expected 3 markets, got %d", len(createdMarkets))
+	if createdMarket.Status != StatusPaused {
+		t.Errorf("market status = %s, want PAUSED (markets are created paused)", createdMarket.Status)
 	}
 }
 
-func TestPGRepository_CreateEventWithMarkets_NegRisk(t *testing.T) {
+func TestPGRepository_CreateEventWithMarket_NegRisk(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -326,24 +341,21 @@ func TestPGRepository_CreateEventWithMarkets_NegRisk(t *testing.T) {
 		EndDate:          time.Now().Add(30 * 24 * time.Hour),
 		NegRiskMarketID:  &negRiskMarketID,
 	}
-	markets := []*Market{
-		defaultMarket("alice"),
-		defaultMarket("bob"),
-	}
+	market := defaultMarket("alice")
 
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event, markets)
+	createdEvent, createdMarket, err := repo.CreateEventWithMarket(ctx, event, market)
 	if err != nil {
 		t.Fatalf("creating neg-risk event: %v", err)
 	}
 	if createdEvent.NegRiskMarketID == nil || *createdEvent.NegRiskMarketID != negRiskMarketID {
 		t.Errorf("event.neg_risk_market_id = %v, want %q", createdEvent.NegRiskMarketID, negRiskMarketID)
 	}
-	if len(createdMarkets) != 2 {
-		t.Errorf("expected 2 markets, got %d", len(createdMarkets))
+	if createdMarket.EventID != createdEvent.ID {
+		t.Errorf("market.event_id = %q, want %q", createdMarket.EventID, createdEvent.ID)
 	}
 }
 
-func TestPGRepository_CreateEventWithMarkets_RejectsEmpty(t *testing.T) {
+func TestPGRepository_CreateEventWithMarket_RejectsNilMarket(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -351,25 +363,31 @@ func TestPGRepository_CreateEventWithMarkets_RejectsEmpty(t *testing.T) {
 
 	catID := seedCategory(t, repo, "x")
 	event := &Event{
-		Slug:             "empty-markets",
-		Title:            "Empty",
+		Slug:             "no-market",
+		Title:            "No Market",
 		CategoryID:       catID,
 		EventType:        EventTypeBinary,
 		ResolutionConfig: json.RawMessage(`{}`),
 		Status:           StatusActive,
 		EndDate:          time.Now().Add(24 * time.Hour),
 	}
-	_, _, err := repo.CreateEventWithMarkets(ctx, event, nil)
+	_, _, err := repo.CreateEventWithMarket(ctx, event, nil)
 	if !errors.Is(err, ErrInvalidEvent) {
 		t.Errorf("expected ErrInvalidEvent, got: %v", err)
 	}
 }
 
-func TestPGRepository_CreateEventWithMarkets_Atomic(t *testing.T) {
+func TestPGRepository_CreateEventWithMarket_Atomic(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
+
+	// Pre-seed an event whose market owns condition_id "c-atomic-seed", then
+	// attempt to create a second event whose market collides on that
+	// condition_id. The market insert must fail and roll back the
+	// just-inserted event row.
+	seedBinaryEvent(t, repo, "atomic-seed")
 
 	catID := seedCategory(t, repo, "atomic")
 	event := &Event{
@@ -381,10 +399,10 @@ func TestPGRepository_CreateEventWithMarkets_Atomic(t *testing.T) {
 		Status:           StatusActive,
 		EndDate:          time.Now().Add(24 * time.Hour),
 	}
-	market1 := defaultMarket("atomic-m1")
-	market2 := defaultMarket("atomic-m1") // duplicate slug intentional
+	colliding := defaultMarket("atomic-m1")
+	colliding.ConditionID = defaultMarket("atomic-seed").ConditionID // duplicate condition_id
 
-	_, _, err := repo.CreateEventWithMarkets(ctx, event, []*Market{market1, market2})
+	_, _, err := repo.CreateEventWithMarket(ctx, event, colliding)
 	if !errors.Is(err, ErrDuplicateSlug) {
 		t.Errorf("expected ErrDuplicateSlug, got: %v", err)
 	}
@@ -396,7 +414,7 @@ func TestPGRepository_CreateEventWithMarkets_Atomic(t *testing.T) {
 	}
 }
 
-func TestPGRepository_CreateEventWithMarkets_DuplicateEventSlug(t *testing.T) {
+func TestPGRepository_CreateEventWithMarket_DuplicateEventSlug(t *testing.T) {
 	pool := postgres.TestPool(t)
 	cleanTables(t, pool)
 	repo := NewPGRepository(pool)
@@ -415,9 +433,94 @@ func TestPGRepository_CreateEventWithMarkets_DuplicateEventSlug(t *testing.T) {
 		Status:           StatusActive,
 		EndDate:          time.Now().Add(24 * time.Hour),
 	}
-	_, _, err := repo.CreateEventWithMarkets(ctx, event, []*Market{defaultMarket("other-market")})
+	_, _, err := repo.CreateEventWithMarket(ctx, event, defaultMarket("other-market"))
 	if !errors.Is(err, ErrDuplicateSlug) {
 		t.Errorf("expected ErrDuplicateSlug on event slug, got: %v", err)
+	}
+}
+
+func TestPGRepository_AddMarketToEvent_Binary(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-binary")
+	market := defaultMarket("append-binary-new")
+
+	event, addedMarket, err := repo.AddMarketToEvent(ctx, eventID, market)
+	if err != nil {
+		t.Fatalf("adding market: %v", err)
+	}
+	if event.ID != eventID {
+		t.Errorf("event id = %q, want %q", event.ID, eventID)
+	}
+	if addedMarket.EventID != eventID {
+		t.Errorf("market.event_id = %q, want %q", addedMarket.EventID, eventID)
+	}
+	if addedMarket.Status != StatusPaused {
+		t.Errorf("appended market status = %s, want PAUSED", addedMarket.Status)
+	}
+
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("event markets after append = %d, want 2", len(all))
+	}
+}
+
+func TestPGRepository_AddMarketToEvent_TerminalEventRejected(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-terminal")
+	if _, err := pool.Exec(ctx, `UPDATE events SET status = $1 WHERE id = $2`, StatusResolved, eventID); err != nil {
+		t.Fatalf("marking event resolved: %v", err)
+	}
+
+	_, _, err := repo.AddMarketToEvent(ctx, eventID, defaultMarket("append-terminal-new"))
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got: %v", err)
+	}
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("event markets after rejected append = %d, want 1", len(all))
+	}
+}
+
+func TestPGRepository_AddMarketToEvent_IdempotentExistingMarket(t *testing.T) {
+	pool := postgres.TestPool(t)
+	cleanTables(t, pool)
+	repo := NewPGRepository(pool)
+	ctx := context.Background()
+
+	eventID, _ := seedBinaryEvent(t, repo, "append-idem")
+	market := defaultMarket("append-idem-new")
+	_, addedMarket, err := repo.AddMarketToEvent(ctx, eventID, market)
+	if err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+
+	_, retried, err := repo.AddMarketToEvent(ctx, eventID, defaultMarket("append-idem-new"))
+	if err != nil {
+		t.Fatalf("retry add: %v", err)
+	}
+	if retried.ID != addedMarket.ID {
+		t.Fatalf("retried market id = %s, want existing %s", retried.ID, addedMarket.ID)
+	}
+	all, err := repo.ListMarketsByEvent(ctx, eventID)
+	if err != nil {
+		t.Fatalf("listing markets: %v", err)
+	}
+	if len(all) != 2 {
+		t.Errorf("event markets after idempotent retry = %d, want 2", len(all))
 	}
 }
 
@@ -920,26 +1023,12 @@ func TestPGRepository_ResolveMarketsInEvent_Partial(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	catID := seedCategory(t, repo, "partial-cat")
-	event := &Event{
-		Slug:             "partial-event",
-		Title:            "Partial",
-		CategoryID:       catID,
-		EventType:        EventTypeBinary,
-		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
-		EndDate:          time.Now().Add(24 * time.Hour),
-	}
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event,
-		[]*Market{defaultMarket("partial-m1"), defaultMarket("partial-m2")})
-	if err != nil {
-		t.Fatalf("creating: %v", err)
-	}
-	m1, m2 := createdMarkets[0], createdMarkets[1]
+	eventID, marketIDs := seedBinaryEventWithMarkets(t, repo, "partial", "partial-m1", "partial-m2")
+	m1ID, m2ID := marketIDs[0], marketIDs[1]
 
 	// Resolve only m1 = YES.
-	updatedEvent, updatedMarkets, err := repo.ResolveMarketsInEvent(ctx, createdEvent.ID, map[string]Outcome{
-		m1.ID: OutcomeYes,
+	updatedEvent, updatedMarkets, err := repo.ResolveMarketsInEvent(ctx, eventID, map[string]Outcome{
+		m1ID: OutcomeYes,
 	})
 	if err != nil {
 		t.Fatalf("partial resolve: %v", err)
@@ -949,14 +1038,14 @@ func TestPGRepository_ResolveMarketsInEvent_Partial(t *testing.T) {
 	}
 	for _, market := range updatedMarkets {
 		switch market.ID {
-		case m1.ID:
+		case m1ID:
 			if market.Status != StatusResolved {
 				t.Errorf("m1 status = %s, want RESOLVED", market.Status)
 			}
 			if market.Outcome == nil || *market.Outcome != OutcomeYes {
 				t.Errorf("m1 outcome = %v, want YES", market.Outcome)
 			}
-		case m2.ID:
+		case m2ID:
 			if market.Status != StatusActive {
 				t.Errorf("m2 status = %s, want ACTIVE", market.Status)
 			}
@@ -964,8 +1053,8 @@ func TestPGRepository_ResolveMarketsInEvent_Partial(t *testing.T) {
 	}
 
 	// Resolve m2 = NO. Event should auto-flip to RESOLVED.
-	updatedEvent, _, err = repo.ResolveMarketsInEvent(ctx, createdEvent.ID, map[string]Outcome{
-		m2.ID: OutcomeNo,
+	updatedEvent, _, err = repo.ResolveMarketsInEvent(ctx, eventID, map[string]Outcome{
+		m2ID: OutcomeNo,
 	})
 	if err != nil {
 		t.Fatalf("second resolve: %v", err)
@@ -1026,25 +1115,11 @@ func TestPGRepository_VoidMarketsInEvent_Partial(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	catID := seedCategory(t, repo, "void-cat")
-	event := &Event{
-		Slug:             "void-event",
-		Title:            "Void",
-		CategoryID:       catID,
-		EventType:        EventTypeBinary,
-		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
-		EndDate:          time.Now().Add(24 * time.Hour),
-	}
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event,
-		[]*Market{defaultMarket("void-m1"), defaultMarket("void-m2")})
-	if err != nil {
-		t.Fatalf("creating: %v", err)
-	}
-	m1, m2 := createdMarkets[0], createdMarkets[1]
+	eventID, marketIDs := seedBinaryEventWithMarkets(t, repo, "void", "void-m1", "void-m2")
+	m1ID, m2ID := marketIDs[0], marketIDs[1]
 
 	// Void m1 only.
-	updatedEvent, _, err := repo.VoidMarketsInEvent(ctx, createdEvent.ID, []string{m1.ID})
+	updatedEvent, _, err := repo.VoidMarketsInEvent(ctx, eventID, []string{m1ID})
 	if err != nil {
 		t.Fatalf("partial void: %v", err)
 	}
@@ -1053,8 +1128,8 @@ func TestPGRepository_VoidMarketsInEvent_Partial(t *testing.T) {
 	}
 
 	// Resolve m2 = YES. Mixed terminal => event auto-flips to RESOLVED.
-	updatedEvent, _, err = repo.ResolveMarketsInEvent(ctx, createdEvent.ID, map[string]Outcome{
-		m2.ID: OutcomeYes,
+	updatedEvent, _, err = repo.ResolveMarketsInEvent(ctx, eventID, map[string]Outcome{
+		m2ID: OutcomeYes,
 	})
 	if err != nil {
 		t.Fatalf("resolve after void: %v", err)
@@ -1070,24 +1145,9 @@ func TestPGRepository_VoidMarketsInEvent_AllVoid(t *testing.T) {
 	repo := NewPGRepository(pool)
 	ctx := context.Background()
 
-	catID := seedCategory(t, repo, "all-void-cat")
-	event := &Event{
-		Slug:             "all-void-event",
-		Title:            "All Void",
-		CategoryID:       catID,
-		EventType:        EventTypeBinary,
-		ResolutionConfig: json.RawMessage(`{}`),
-		Status:           StatusActive,
-		EndDate:          time.Now().Add(24 * time.Hour),
-	}
-	createdEvent, createdMarkets, err := repo.CreateEventWithMarkets(ctx, event,
-		[]*Market{defaultMarket("av-m1"), defaultMarket("av-m2")})
-	if err != nil {
-		t.Fatalf("creating: %v", err)
-	}
+	eventID, marketIDs := seedBinaryEventWithMarkets(t, repo, "all-void", "av-m1", "av-m2")
 
-	ids := []string{createdMarkets[0].ID, createdMarkets[1].ID}
-	updatedEvent, _, err := repo.VoidMarketsInEvent(ctx, createdEvent.ID, ids)
+	updatedEvent, _, err := repo.VoidMarketsInEvent(ctx, eventID, marketIDs)
 	if err != nil {
 		t.Fatalf("voiding all: %v", err)
 	}

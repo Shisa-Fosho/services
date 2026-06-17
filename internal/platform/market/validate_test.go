@@ -223,60 +223,29 @@ func TestValidateNegRiskCoherence(t *testing.T) {
 
 	marketID := "0xabc"
 
-	mkMarkets := func(count int) []*Market {
-		out := make([]*Market, count)
-		for idx := range out {
-			out[idx] = validMarket()
-		}
-		return out
-	}
-
 	tests := []struct {
 		name    string
 		event   *Event
-		markets []*Market
 		wantErr bool
 	}{
 		{
-			name:    "binary with one market passes",
+			name:    "binary without neg_risk_market_id passes",
 			event:   &Event{EventType: EventTypeBinary},
-			markets: mkMarkets(1),
 			wantErr: false,
-		},
-		{
-			name:    "binary with multiple markets passes",
-			event:   &Event{EventType: EventTypeBinary},
-			markets: mkMarkets(3),
-			wantErr: false,
-		},
-		{
-			name:    "binary with zero markets fails",
-			event:   &Event{EventType: EventTypeBinary},
-			markets: mkMarkets(0),
-			wantErr: true,
 		},
 		{
 			name:    "binary with neg_risk_market_id fails",
 			event:   &Event{EventType: EventTypeBinary, NegRiskMarketID: &marketID},
-			markets: mkMarkets(1),
 			wantErr: true,
 		},
 		{
-			name:    "neg_risk with two markets passes",
+			name:    "neg_risk with neg_risk_market_id passes",
 			event:   &Event{EventType: EventTypeNegRisk, NegRiskMarketID: &marketID},
-			markets: mkMarkets(2),
 			wantErr: false,
-		},
-		{
-			name:    "neg_risk with one market fails",
-			event:   &Event{EventType: EventTypeNegRisk, NegRiskMarketID: &marketID},
-			markets: mkMarkets(1),
-			wantErr: true,
 		},
 		{
 			name:    "neg_risk without neg_risk_market_id fails",
 			event:   &Event{EventType: EventTypeNegRisk},
-			markets: mkMarkets(2),
 			wantErr: true,
 		},
 	}
@@ -284,7 +253,7 @@ func TestValidateNegRiskCoherence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := ValidateNegRiskCoherence(tt.event, tt.markets)
+			err := ValidateNegRiskCoherence(tt.event)
 			if tt.wantErr && err == nil {
 				t.Error("expected error, got nil")
 			}
