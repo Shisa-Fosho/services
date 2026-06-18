@@ -1,0 +1,170 @@
+name: staging
+
+on:
+  pull_request:
+    branches: [staging]
+  push:
+    branches: [staging]
+
+concurrency:
+  group: staging-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install abigen
+        run: |
+          go install github.com/ethereum/go-ethereum/cmd/abigen@v1.17.2
+          go install github.com/bufbuild/buf/cmd/buf@v1.59.0
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Check formatting
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then
+            printf 'gofmt required:\n%s\n' "$files" >&2
+            exit 1
+          fi
+
+      - name: Run tests
+        run: make test
+
+      - name: Run go vet
+        run: |
+          make gen-contracts
+          go vet ./...
+
+      - name: Validate Docker Compose files
+        run: |
+          docker compose -f deploy/local/docker-compose.yml config >/dev/null
+          cp deploy/staging/staging.env.example deploy/staging/.env
+          docker compose --env-file deploy/staging/.env -f deploy/staging/docker-compose.yml config >/dev/null
+
+  images:
+    name: image / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [trading, platform, settlement, indexer, migrate]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            SERVICE=${{ matrix.service }}
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/shisa-fosho/services/${{ matrix.service }}:${{ github.sha }}
+            ghcr.io/shisa-fosho/services/${{ matrix.service }}:staging
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  deploy:
+    name: deploy staging
+    runs-on: [self-hosted, shisa-staging]
+    needs: images
+    if: github.event_name == 'push'
+    environment: staging
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Render staging environment file
+        env:
+          STAGING_POSTGRES_USER: ${{ secrets.STAGING_POSTGRES_USER }}
+          STAGING_POSTGRES_PASSWORD: ${{ secrets.STAGING_POSTGRES_PASSWORD }}
+          STAGING_POSTGRES_DB: ${{ secrets.STAGING_POSTGRES_DB }}
+          STAGING_JWT_ACCESS_SECRET: ${{ secrets.STAGING_JWT_ACCESS_SECRET }}
+          STAGING_JWT_REFRESH_SECRET: ${{ secrets.STAGING_JWT_REFRESH_SECRET }}
+          STAGING_APIKEY_DERIVATION_SECRET: ${{ secrets.STAGING_APIKEY_DERIVATION_SECRET }}
+          STAGING_APIKEY_ENCRYPTION_KEY: ${{ secrets.STAGING_APIKEY_ENCRYPTION_KEY }}
+          STAGING_POLYGON_RPC_URL: ${{ secrets.STAGING_POLYGON_RPC_URL }}
+          STAGING_CONDITIONAL_TOKENS_ADDRESS: ${{ secrets.STAGING_CONDITIONAL_TOKENS_ADDRESS }}
+          STAGING_NEG_RISK_ADAPTER_ADDRESS: ${{ secrets.STAGING_NEG_RISK_ADAPTER_ADDRESS }}
+          STAGING_COLLATERAL_TOKEN_ADDRESS: ${{ secrets.STAGING_COLLATERAL_TOKEN_ADDRESS }}
+          STAGING_TAILSCALE_HOSTNAME: ${{ secrets.STAGING_TAILSCALE_HOSTNAME }}
+          STAGING_TAILSCALE_IP: ${{ secrets.STAGING_TAILSCALE_IP }}
+          STAGING_CLOB_PUBLIC_URL: ${{ secrets.STAGING_CLOB_PUBLIC_URL }}
+          STAGING_PLATFORM_PUBLIC_URL: ${{ secrets.STAGING_PLATFORM_PUBLIC_URL }}
+          STAGING_GRAFANA_ADMIN_USER: ${{ secrets.STAGING_GRAFANA_ADMIN_USER }}
+          STAGING_GRAFANA_ADMIN_PASSWORD: ${{ secrets.STAGING_GRAFANA_ADMIN_PASSWORD }}
+        run: |
+          install -m 750 -d /opt/shisa/staging
+          {
+            printf 'IMAGE_PREFIX=ghcr.io/shisa-fosho/services\n'
+            printf 'IMAGE_TAG=%s\n' '${{ github.sha }}'
+            printf 'STAGING_POSTGRES_USER=%s\n' "$STAGING_POSTGRES_USER"
+            printf 'STAGING_POSTGRES_PASSWORD=%s\n' "$STAGING_POSTGRES_PASSWORD"
+            printf 'STAGING_POSTGRES_DB=%s\n' "$STAGING_POSTGRES_DB"
+            printf 'STAGING_JWT_ACCESS_SECRET=%s\n' "$STAGING_JWT_ACCESS_SECRET"
+            printf 'STAGING_JWT_REFRESH_SECRET=%s\n' "$STAGING_JWT_REFRESH_SECRET"
+            printf 'STAGING_APIKEY_DERIVATION_SECRET=%s\n' "$STAGING_APIKEY_DERIVATION_SECRET"
+            printf 'STAGING_APIKEY_ENCRYPTION_KEY=%s\n' "$STAGING_APIKEY_ENCRYPTION_KEY"
+            printf 'STAGING_POLYGON_RPC_URL=%s\n' "$STAGING_POLYGON_RPC_URL"
+            printf 'STAGING_CONDITIONAL_TOKENS_ADDRESS=%s\n' "$STAGING_CONDITIONAL_TOKENS_ADDRESS"
+            printf 'STAGING_NEG_RISK_ADAPTER_ADDRESS=%s\n' "$STAGING_NEG_RISK_ADAPTER_ADDRESS"
+            printf 'STAGING_COLLATERAL_TOKEN_ADDRESS=%s\n' "$STAGING_COLLATERAL_TOKEN_ADDRESS"
+            printf 'STAGING_TAILSCALE_HOSTNAME=%s\n' "$STAGING_TAILSCALE_HOSTNAME"
+            printf 'STAGING_TAILSCALE_IP=%s\n' "$STAGING_TAILSCALE_IP"
+            printf 'STAGING_CLOB_PUBLIC_URL=%s\n' "$STAGING_CLOB_PUBLIC_URL"
+            printf 'STAGING_PLATFORM_PUBLIC_URL=%s\n' "$STAGING_PLATFORM_PUBLIC_URL"
+            printf 'STAGING_GRAFANA_ADMIN_USER=%s\n' "$STAGING_GRAFANA_ADMIN_USER"
+            printf 'STAGING_GRAFANA_ADMIN_PASSWORD=%s\n' "$STAGING_GRAFANA_ADMIN_PASSWORD"
+          } > /opt/shisa/staging/.env
+          chmod 600 /opt/shisa/staging/.env
+
+      - name: Sync deploy artifacts locally
+        run: |
+          find /opt/shisa/staging -mindepth 1 -maxdepth 1 \
+            ! -name .env \
+            ! -name certs \
+            -exec rm -rf {} +
+          cp -a deploy/staging/. /opt/shisa/staging/
+          chmod +x /opt/shisa/staging/scripts/*.sh
+
+      - name: Log VPS into GHCR for this deploy
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Deploy and smoke-check staging
+        run: |
+          cd /opt/shisa/staging
+          ./scripts/deploy-staging.sh "${{ github.sha }}"
+          ./scripts/smoke-staging.sh
