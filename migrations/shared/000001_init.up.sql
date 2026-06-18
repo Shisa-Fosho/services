@@ -1,3 +1,3 @@
 -- Verify database setup is correct.
--- Extensions are created by deploy/postgres-init.sql.
+-- Extensions are created by deploy/local/postgres-init.sql.
 SELECT 1;
