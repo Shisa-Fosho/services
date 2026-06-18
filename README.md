@@ -88,7 +88,7 @@ internal/
 proto/           # Protobuf definitions (buf)
 migrations/      # SQL migrations per service, run shared → platform → trading
 deploy/          # docker-compose, Prometheus, Grafana, Loki, Tempo, NATS configs
-docs/            # conventions.md (authoritative style guide)
+docs/            # conventions.md (authoritative style guide), admin-panel-integration.md
 ```
 
 ## Conventions
